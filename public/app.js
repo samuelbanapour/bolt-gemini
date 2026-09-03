@@ -4,8 +4,6 @@
  * Streaming Gemini AI responses, and Render instant deployments.
  */
 
-import { WebContainer } from 'https://unpkg.com/@webcontainer/api@1.5.1/dist/index.js';
-
 // Application State
 let webcontainerInstance = null;
 let monacoEditor = null;
@@ -46,141 +44,273 @@ const btnSaveSettings = document.getElementById('btn-save-settings');
 const inputGeminiKey = document.getElementById('input-gemini-key');
 const inputRenderKey = document.getElementById('input-render-key');
 
-// Initialize IDE
-window.addEventListener('DOMContentLoaded', async () => {
+/**
+ * Bootstrap the IDE components safely
+ */
+function bootstrap() {
+  console.log('⚡ Initializing Bolt.gemini IDE...');
   initSettings();
   initTabs();
+  initChatListeners();
   initTerminal();
   initMonaco();
-  await initWebContainer();
-});
+  initWebContainer();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootstrap);
+} else {
+  bootstrap();
+}
 
 function initSettings() {
+  if (!inputGeminiKey) return;
   inputGeminiKey.value = localStorage.getItem('gemini_api_key') || '';
   inputRenderKey.value = localStorage.getItem('render_api_key') || '';
 
-  btnSettings.addEventListener('click', () => settingsModal.classList.remove('hidden'));
-  btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'));
-  btnSaveSettings.addEventListener('click', () => {
+  btnSettings?.addEventListener('click', () => settingsModal?.classList.remove('hidden'));
+  btnCloseSettings?.addEventListener('click', () => settingsModal?.classList.add('hidden'));
+  btnSaveSettings?.addEventListener('click', () => {
     localStorage.setItem('gemini_api_key', inputGeminiKey.value.trim());
     localStorage.setItem('render_api_key', inputRenderKey.value.trim());
-    settingsModal.classList.add('hidden');
+    settingsModal?.classList.add('hidden');
   });
 
   // Suggestion chips
   document.querySelectorAll('.suggestion-chip').forEach(chip => {
     chip.addEventListener('click', () => {
-      promptInput.value = chip.textContent.replace(/^"|"$/g, '');
-      promptInput.focus();
-    });
-  });
-}
-
-function initTabs() {
-  tabPreview.addEventListener('click', () => {
-    tabPreview.classList.add('active');
-    tabTerminal.classList.remove('active');
-    previewWrapper.classList.add('active');
-    terminalWrapper.classList.remove('active');
-  });
-
-  tabTerminal.addEventListener('click', () => {
-    tabTerminal.classList.add('active');
-    tabPreview.classList.remove('active');
-    terminalWrapper.classList.add('active');
-    previewWrapper.classList.remove('active');
-    if (fitAddon) fitAddon.fit();
-  });
-
-  btnRefreshPreview.addEventListener('click', () => {
-    if (previewFrame.src && previewFrame.src !== 'about:blank') {
-      const current = previewFrame.src;
-      previewFrame.src = 'about:blank';
-      setTimeout(() => { previewFrame.src = current; }, 50);
-    }
-  });
-}
-
-function initTerminal() {
-  terminal = new Terminal({
-    convertEol: true,
-    fontSize: 13,
-    fontFamily: 'JetBrains Mono, Fira Code, monospace',
-    theme: {
-      background: '#000000',
-      foreground: '#d4d4d4'
-    }
-  });
-
-  fitAddon = new FitAddon.FitAddon();
-  terminal.loadAddon(fitAddon);
-  terminal.open(document.getElementById('terminal-container'));
-  fitAddon.fit();
-
-  terminal.writeln('\x1b[1;34m⚡ Bolt.gemini Terminal Initialized\x1b[0m');
-}
-
-function initMonaco() {
-  window.require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.51.0/min/vs' } });
-  window.require(['vs/editor/editor.main'], () => {
-    monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
-      value: '// Welcome to Bolt.gemini
-// Type a prompt on the left to generate and run your application in real-time.',
-      language: 'javascript',
-      theme: 'vs-dark',
-      automaticLayout: true,
-      minimap: { enabled: false },
-      fontSize: 13
-    });
-
-    // Save edits from Monaco back to virtual filesystem & WebContainer
-    monacoEditor.onDidChangeModelContent(async () => {
-      if (!currentOpenFilePath || !webcontainerInstance) return;
-      const updatedValue = monacoEditor.getValue();
-      virtualFileSystem.set(currentOpenFilePath, updatedValue);
-      try {
-        await webcontainerInstance.fs.writeFile(currentOpenFilePath, updatedValue);
-      } catch (err) {
-        console.warn('Sync to WebContainer failed:', err);
+      if (promptInput) {
+        promptInput.value = chip.textContent.replace(/^"|"$/g, '');
+        promptInput.focus();
       }
     });
   });
 }
 
-async function initWebContainer() {
+function initTabs() {
+  tabPreview?.addEventListener('click', () => {
+    tabPreview.classList.add('active');
+    tabTerminal?.classList.remove('active');
+    previewWrapper?.classList.add('active');
+    terminalWrapper?.classList.remove('active');
+  });
+
+  tabTerminal?.addEventListener('click', () => {
+    tabTerminal.classList.add('active');
+    tabPreview?.classList.remove('active');
+    terminalWrapper?.classList.add('active');
+    previewWrapper?.classList.remove('active');
+    if (fitAddon) {
+      try { fitAddon.fit(); } catch (e) {}
+    }
+  });
+
+  btnRefreshPreview?.addEventListener('click', () => {
+    if (previewFrame && previewFrame.src && previewFrame.src !== 'about:blank') {
+      const current = previewFrame.src;
+      previewFrame.src = 'about:blank';
+      setTimeout(() => { previewFrame.src = current; }, 50);
+    } else {
+      updateStaticPreviewFallback();
+    }
+  });
+}
+
+function initChatListeners() {
+  btnSend?.addEventListener('click', () => {
+    const prompt = promptInput?.value?.trim();
+    if (!prompt) return;
+    promptInput.value = '';
+    executeGeminiTurn(prompt);
+  });
+
+  promptInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      btnSend?.click();
+    }
+  });
+}
+
+function initTerminal() {
   try {
-    statusIndicator.textContent = 'Sandbox: Booting Node.js WASM...';
-    webcontainerInstance = await WebContainer.boot();
-    statusIndicator.textContent = 'Sandbox: Ready';
-    statusIndicator.style.color = '#10b981';
-    btnDeploy.disabled = false;
+    if (typeof Terminal !== 'undefined') {
+      terminal = new Terminal({
+        convertEol: true,
+        fontSize: 13,
+        fontFamily: 'JetBrains Mono, Fira Code, monospace',
+        theme: {
+          background: '#000000',
+          foreground: '#d4d4d4'
+        }
+      });
+
+      if (typeof FitAddon !== 'undefined') {
+        fitAddon = new FitAddon.FitAddon();
+        terminal.loadAddon(fitAddon);
+      }
+
+      const termContainer = document.getElementById('terminal-container');
+      if (termContainer) {
+        terminal.open(termContainer);
+        if (fitAddon) fitAddon.fit();
+      }
+
+      terminal.writeln('\x1b[1;34m⚡ Bolt.gemini Terminal Initialized\x1b[0m');
+    }
+  } catch (err) {
+    console.warn('Terminal initialization failed:', err);
+  }
+}
+
+function initMonaco() {
+  const monacoContainer = document.getElementById('monaco-container');
+  if (!monacoContainer) return;
+
+  if (window.require) {
+    try {
+      window.require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.51.0/min/vs' } });
+      window.require(['vs/editor/editor.main'], () => {
+        monacoEditor = monaco.editor.create(monacoContainer, {
+          value: '// Welcome to Bolt.gemini
+// Type a prompt on the left to generate and run your application in real-time.',
+          language: 'javascript',
+          theme: 'vs-dark',
+          automaticLayout: true,
+          minimap: { enabled: false },
+          fontSize: 13
+        });
+
+        monacoEditor.onDidChangeModelContent(async () => {
+          if (!currentOpenFilePath) return;
+          const updatedValue = monacoEditor.getValue();
+          virtualFileSystem.set(currentOpenFilePath, updatedValue);
+          if (webcontainerInstance) {
+            try {
+              await webcontainerInstance.fs.writeFile(currentOpenFilePath, updatedValue);
+            } catch (err) {
+              console.warn('Sync to WebContainer failed:', err);
+            }
+          }
+          updateStaticPreviewFallback();
+        });
+      }, (err) => {
+        console.warn('Monaco failed to load from CDN, using fallback editor:', err);
+        setupFallbackEditor();
+      });
+    } catch (e) {
+      setupFallbackEditor();
+    }
+  } else {
+    setupFallbackEditor();
+  }
+}
+
+function setupFallbackEditor() {
+  const container = document.getElementById('monaco-container');
+  if (!container || container.querySelector('textarea')) return;
+  container.innerHTML = `<textarea id="fallback-code-editor" style="width:100%;height:100%;background:#1e1e1e;color:#f1f3f9;font-family:monospace;padding:1rem;border:none;outline:none;resize:none;font-size:13px;"></textarea>`;
+  const textarea = document.getElementById('fallback-code-editor');
+  textarea.value = '// Welcome to Bolt.gemini
+// Enter a prompt on the left to generate code.';
+  textarea.addEventListener('input', async () => {
+    if (!currentOpenFilePath) return;
+    virtualFileSystem.set(currentOpenFilePath, textarea.value);
+    if (webcontainerInstance) {
+      try {
+        await webcontainerInstance.fs.writeFile(currentOpenFilePath, textarea.value);
+      } catch (e) {}
+    }
+    updateStaticPreviewFallback();
+  });
+}
+
+/**
+ * Boot WebContainer sandbox with timeout and cross-origin isolation verification
+ */
+async function initWebContainer() {
+  if (statusIndicator) {
+    statusIndicator.textContent = 'Sandbox: Checking environment...';
+  }
+
+  // 1. Verify Cross-Origin Isolation (SharedArrayBuffer)
+  if (!window.crossOriginIsolated) {
+    const warning = 'Browser context is not cross-origin isolated. WebContainers require COOP & COEP headers.';
+    console.warn(warning);
+    if (terminal) {
+      terminal.writeln(`\r
+\x1b[33m[Notice] Cross-Origin Isolation is not active.\x1b[0m`);
+      terminal.writeln(`\x1b[33mCode generation and Monaco editor will run in Direct Preview mode.\x1b[0m\r
+`);
+    }
+    if (statusIndicator) {
+      statusIndicator.textContent = 'Sandbox: Direct Mode';
+      statusIndicator.style.color = '#38bdf8';
+    }
+    if (btnDeploy) btnDeploy.disabled = false;
+    return;
+  }
+
+  // 2. Dynamically import WebContainer API from local server proxy
+  try {
+    if (statusIndicator) statusIndicator.textContent = 'Sandbox: Loading WebContainer API...';
+
+    const { WebContainer } = await import('/vendor/webcontainer.js');
+
+    if (statusIndicator) statusIndicator.textContent = 'Sandbox: Booting Node.js WASM...';
+
+    // Race boot with 15s timeout
+    const bootPromise = WebContainer.boot();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('WebContainer boot timed out after 15 seconds')), 15000)
+    );
+
+    webcontainerInstance = await Promise.race([bootPromise, timeoutPromise]);
+
+    if (statusIndicator) {
+      statusIndicator.textContent = 'Sandbox: Ready';
+      statusIndicator.style.color = '#10b981';
+    }
+    if (btnDeploy) btnDeploy.disabled = false;
 
     // Listen for dev server ready event
     webcontainerInstance.on('server-ready', (port, url) => {
-      terminal.writeln(`\r
-\x1b[1;32m⚡ Server ready at: ${url} (port ${port})\x1b[0m\r
+      if (terminal) {
+        terminal.writeln(`\r
+\x1b[1;32m⚡ Dev Server ready at: ${url} (port ${port})\x1b[0m\r
 `);
-      previewFrame.src = url;
-      previewPlaceholder.classList.add('hidden');
-      previewOpenLink.href = url;
-      // Switch view to preview
-      tabPreview.click();
+      }
+      if (previewFrame) previewFrame.src = url;
+      previewPlaceholder?.classList.add('hidden');
+      if (previewOpenLink) previewOpenLink.href = url;
+      tabPreview?.click();
     });
 
-    // Handle internal errors
     webcontainerInstance.on('error', (err) => {
-      terminal.writeln(`\r
+      if (terminal) {
+        terminal.writeln(`\r
 \x1b[1;31m[WebContainer Error] ${err.message}\x1b[0m\r
 `);
+      }
     });
+
+    if (terminal) {
+      terminal.writeln('\x1b[1;32m✔ WebContainer Node.js sandbox ready.\x1b[0m\r
+');
+    }
   } catch (err) {
-    console.error('Failed to boot WebContainer:', err);
-    statusIndicator.textContent = 'Sandbox: Boot Failed';
-    statusIndicator.style.color = '#ef4444';
-    terminal.writeln(`\r
-\x1b[1;31mFailed to boot WebContainer: ${err.message}\x1b[0m`);
-    terminal.writeln(`\x1b[33mEnsure browser supports Cross-Origin Isolation (COOP & COEP headers).\x1b[0m\r
+    console.warn('WebContainer boot issue:', err);
+    if (statusIndicator) {
+      statusIndicator.textContent = 'Sandbox: Direct Mode';
+      statusIndicator.style.color = '#38bdf8';
+    }
+    if (terminal) {
+      terminal.writeln(`\r
+\x1b[33m[Sandbox Notice] ${err.message}\x1b[0m`);
+      terminal.writeln(`\x1b[32mCode generation and live static preview are fully active.\x1b[0m\r
 `);
+    }
+    if (btnDeploy) btnDeploy.disabled = false;
   }
 }
 
@@ -188,46 +318,56 @@ async function initWebContainer() {
  * Execute command inside WebContainer and stream to xterm.js
  */
 async function runCommand(commandStr, isBackground = false) {
-  if (!webcontainerInstance) return;
+  if (!webcontainerInstance) {
+    if (terminal) {
+      terminal.writeln(`\r
+\x1b[90m[Direct Mode] ${commandStr}\x1b[0m`);
+    }
+    updateStaticPreviewFallback();
+    return 0;
+  }
 
-  terminal.writeln(`\r
+  if (terminal) {
+    terminal.writeln(`\r
 \x1b[1;36m$ ${commandStr}\x1b[0m\r
 `);
+  }
+
   const parts = commandStr.trim().split(/\s+/);
   const cmd = parts[0];
   const args = parts.slice(1);
 
-  const process = await webcontainerInstance.spawn(cmd, args);
+  try {
+    const process = await webcontainerInstance.spawn(cmd, args);
 
-  let capturedStderr = '';
-  process.output.pipeTo(
-    new WritableStream({
-      write(data) {
-        terminal.write(data);
-        if (data.toLowerCase().includes('error') || data.toLowerCase().includes('failed')) {
-          capturedStderr += data;
+    let capturedStderr = '';
+    process.output.pipeTo(
+      new WritableStream({
+        write(data) {
+          if (terminal) terminal.write(data);
+          if (data.toLowerCase().includes('error') || data.toLowerCase().includes('failed')) {
+            capturedStderr += data;
+          }
         }
-      }
-    })
-  );
+      })
+    );
 
-  if (!isBackground) {
-    const exitCode = await process.exit;
-    if (exitCode !== 0) {
-      terminal.writeln(`\r
-\x1b[1;31mCommand exited with code ${exitCode}\x1b[0m\r
-`);
-      // Offer auto-heal turn
-      if (capturedStderr) {
+    if (!isBackground) {
+      const exitCode = await process.exit;
+      if (exitCode !== 0 && capturedStderr) {
         handleAutoHeal(capturedStderr);
       }
+      return exitCode;
     }
-    return exitCode;
+  } catch (err) {
+    if (terminal) terminal.writeln(`\r
+\x1b[31mCommand failed: ${err.message}\x1b[0m\r
+`);
   }
 }
 
 /**
- * Auto-heal error loop
+ * Auto-heal error prompt
  */
 function handleAutoHeal(errorMessage) {
   const autoFixNotice = document.createElement('div');
@@ -240,27 +380,10 @@ function handleAutoHeal(errorMessage) {
   chatMessages.appendChild(autoFixNotice);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
-  document.getElementById('btn-fix-error').addEventListener('click', () => {
+  document.getElementById('btn-fix-error')?.addEventListener('click', () => {
     executeGeminiTurn('', errorMessage);
   });
 }
-
-/**
- * Chat Submission Handler
- */
-btnSend.addEventListener('click', () => {
-  const prompt = promptInput.value.trim();
-  if (!prompt) return;
-  promptInput.value = '';
-  executeGeminiTurn(prompt);
-});
-
-promptInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    btnSend.click();
-  }
-});
 
 /**
  * Execute Gemini Agent Turn via SSE
@@ -270,15 +393,14 @@ async function executeGeminiTurn(prompt, terminalError = null) {
     appendUserMessage(prompt);
   }
 
-  btnSend.disabled = true;
-  statusIndicator.textContent = 'Gemini: Generating solution...';
+  if (btnSend) btnSend.disabled = true;
+  if (statusIndicator) statusIndicator.textContent = 'Gemini: Generating solution...';
 
   // Prepare current files for context
   const fileContext = {};
   for (const [path, content] of virtualFileSystem.entries()) {
-    // Only send key files to keep context concise
     if (!path.includes('node_modules') && !path.includes('package-lock.json')) {
-      fileContext[path] = content.slice(0, 3000); // cap file length
+      fileContext[path] = content.slice(0, 3000);
     }
   }
 
@@ -291,7 +413,6 @@ async function executeGeminiTurn(prompt, terminalError = null) {
 
   let currentArtifactEl = null;
 
-  // Stream parser instance
   const parser = new ClientArtifactParser({
     onExplanationChunk(chunk) {
       explanationEl.innerHTML += escapeHtml(chunk).replace(/
@@ -308,7 +429,6 @@ async function executeGeminiTurn(prompt, terminalError = null) {
       if (!currentArtifactEl) return;
       const actionItem = document.createElement('div');
       actionItem.className = 'action-item';
-      actionItem.id = `action-${Date.now()}`;
       const icon = action.type === 'file' ? '📄' : '⚙️';
       const label = action.type === 'file' ? action.filePath : action.content;
       actionItem.innerHTML = `<span class="action-status">⏳</span> ${icon} <span>${escapeHtml(label || '')}</span>`;
@@ -325,7 +445,10 @@ async function executeGeminiTurn(prompt, terminalError = null) {
       }
     },
     onArtifactComplete() {
-      statusIndicator.textContent = 'Sandbox: Ready';
+      if (statusIndicator) {
+        statusIndicator.textContent = webcontainerInstance ? 'Sandbox: Ready' : 'Sandbox: Direct Mode';
+      }
+      updateStaticPreviewFallback();
     }
   });
 
@@ -361,9 +484,10 @@ async function executeGeminiTurn(prompt, terminalError = null) {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('
 ');
-      buffer = lines.pop();
+      buffer = lines.pop() || '';
 
-      for (const line of lines) {
+      for (let rawLine of lines) {
+        const line = rawLine.trim();
         if (line.startsWith('data: ')) {
           try {
             const data = JSON.parse(line.slice(6));
@@ -371,8 +495,9 @@ async function executeGeminiTurn(prompt, terminalError = null) {
               parser.write(data.chunk);
             }
             if (data.error) {
-              terminal.writeln(`\r
+              if (terminal) terminal.writeln(`\r
 \x1b[31m[Gemini Error] ${data.error}\x1b[0m`);
+              explanationEl.innerHTML += `<p style="color:#ef4444;">${escapeHtml(data.error)}</p>`;
             }
           } catch (e) {}
         }
@@ -386,34 +511,43 @@ async function executeGeminiTurn(prompt, terminalError = null) {
   } catch (err) {
     explanationEl.innerHTML += `<p style="color: #ef4444;">Error: ${escapeHtml(err.message)}</p>`;
   } finally {
-    btnSend.disabled = false;
+    if (btnSend) btnSend.disabled = false;
   }
 }
 
 async function writeFileToSandbox(filePath, content) {
-  if (!webcontainerInstance) return;
-
-  // Ensure directory exists
-  const segments = filePath.split('/');
-  if (segments.length > 1) {
-    const dir = segments.slice(0, -1).join('/');
-    await webcontainerInstance.fs.mkdir(dir, { recursive: true });
-  }
-
-  await webcontainerInstance.fs.writeFile(filePath, content);
+  // Always update in-memory VFS and UI
   virtualFileSystem.set(filePath, content);
-
   updateFileTree();
 
-  // If this is the active file in Monaco, update editor
-  if (currentOpenFilePath === filePath && monacoEditor) {
-    monacoEditor.setValue(content);
+  if (currentOpenFilePath === filePath) {
+    if (monacoEditor) {
+      monacoEditor.setValue(content);
+    } else {
+      const fallback = document.getElementById('fallback-code-editor');
+      if (fallback) fallback.value = content;
+    }
   } else if (!currentOpenFilePath) {
     openFile(filePath);
+  }
+
+  // If WebContainer instance exists, write to WASM disk
+  if (webcontainerInstance) {
+    try {
+      const segments = filePath.split('/');
+      if (segments.length > 1) {
+        const dir = segments.slice(0, -1).join('/');
+        await webcontainerInstance.fs.mkdir(dir, { recursive: true });
+      }
+      await webcontainerInstance.fs.writeFile(filePath, content);
+    } catch (e) {
+      console.warn('WASM FS write warning:', e);
+    }
   }
 }
 
 function updateFileTree() {
+  if (!treeContent) return;
   treeContent.innerHTML = '';
   const files = Array.from(virtualFileSystem.keys()).sort();
 
@@ -430,27 +564,45 @@ function openFile(filePath) {
   currentOpenFilePath = filePath;
   const content = virtualFileSystem.get(filePath) || '';
 
-  // Update tabs
-  fileTabs.innerHTML = `<div class="tab active">${filePath}</div>`;
+  if (fileTabs) {
+    fileTabs.innerHTML = `<div class="tab active">${filePath}</div>`;
+  }
 
-  // Update editor model
   if (monacoEditor) {
     const ext = filePath.split('.').pop();
     const langMap = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', html: 'html', css: 'css', json: 'json' };
     const lang = langMap[ext] || 'plaintext';
     const model = monaco.editor.createModel(content, lang);
     monacoEditor.setModel(model);
+  } else {
+    const fallback = document.getElementById('fallback-code-editor');
+    if (fallback) fallback.value = content;
   }
 
   updateFileTree();
+}
+
+/**
+ * Direct static HTML/CSS/JS preview fallback
+ */
+function updateStaticPreviewFallback() {
+  if (webcontainerInstance && previewFrame.src && previewFrame.src.startsWith('http')) {
+    return; // dev server is running
+  }
+
+  const htmlContent = virtualFileSystem.get('index.html') || virtualFileSystem.get('public/index.html');
+  if (htmlContent && previewFrame) {
+    previewPlaceholder?.classList.add('hidden');
+    previewFrame.srcdoc = htmlContent;
+  }
 }
 
 function appendUserMessage(text) {
   const msgEl = document.createElement('div');
   msgEl.className = 'message user';
   msgEl.textContent = text;
-  chatMessages.appendChild(msgEl);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  chatMessages?.appendChild(msgEl);
+  if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function escapeHtml(str) {
@@ -460,21 +612,23 @@ function escapeHtml(str) {
 /**
  * Render Instant Deployment Integration
  */
-btnDeploy.addEventListener('click', () => {
-  deployModal.classList.remove('hidden');
-  deploySuccessBox.classList.add('hidden');
-  deployStatusBox.classList.add('hidden');
-  deployProjectName.value = 'app-' + Math.random().toString(36).substring(2, 7);
+btnDeploy?.addEventListener('click', () => {
+  deployModal?.classList.remove('hidden');
+  deploySuccessBox?.classList.add('hidden');
+  deployStatusBox?.classList.add('hidden');
+  if (deployProjectName) {
+    deployProjectName.value = 'app-' + Math.random().toString(36).substring(2, 7);
+  }
 });
 
-btnCloseDeploy.addEventListener('click', () => deployModal.classList.add('hidden'));
+btnCloseDeploy?.addEventListener('click', () => deployModal?.classList.add('hidden'));
 
-btnConfirmDeploy.addEventListener('click', async () => {
-  const name = deployProjectName.value.trim();
+btnConfirmDeploy?.addEventListener('click', async () => {
+  const name = deployProjectName?.value?.trim() || 'my-app';
   const renderApiKey = localStorage.getItem('render_api_key');
 
-  deployStatusBox.classList.remove('hidden');
-  btnConfirmDeploy.disabled = true;
+  deployStatusBox?.classList.remove('hidden');
+  if (btnConfirmDeploy) btnConfirmDeploy.disabled = true;
 
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -493,19 +647,24 @@ btnConfirmDeploy.addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Deployment initiation failed');
 
-    deployStatusText.textContent = `Service created: ${data.name}. Provisioning global CDN...`;
+    if (deployStatusText) {
+      deployStatusText.textContent = `Service created: ${data.name}. Provisioning global CDN...`;
+    }
 
-    // Wait and display public URL
     setTimeout(() => {
-      deployStatusBox.classList.add('hidden');
-      deploySuccessBox.classList.remove('hidden');
-      deployLiveUrl.href = data.url;
-      deployLiveUrl.textContent = data.url;
-      btnConfirmDeploy.disabled = false;
+      deployStatusBox?.classList.add('hidden');
+      deploySuccessBox?.classList.remove('hidden');
+      if (deployLiveUrl) {
+        deployLiveUrl.href = data.url;
+        deployLiveUrl.textContent = data.url;
+      }
+      if (btnConfirmDeploy) btnConfirmDeploy.disabled = false;
     }, 4000);
   } catch (err) {
-    deployStatusText.textContent = `Deploy error: ${err.message}`;
-    btnConfirmDeploy.disabled = false;
+    if (deployStatusText) {
+      deployStatusText.textContent = `Deploy error: ${err.message}`;
+    }
+    if (btnConfirmDeploy) btnConfirmDeploy.disabled = false;
   }
 });
 

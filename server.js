@@ -30,6 +30,27 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
+ * Vendor proxy for @webcontainer/api
+ * Serves same-origin with CORP headers to prevent COEP from blocking it in the browser
+ */
+app.get('/vendor/webcontainer.js', async (req, res) => {
+  try {
+    const upstream = await fetch('https://cdn.jsdelivr.net/npm/@webcontainer/api@1.5.1/dist/index.js');
+    if (!upstream.ok) {
+      throw new Error(`Upstream returned ${upstream.status}`);
+    }
+    const script = await upstream.text();
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(script);
+  } catch (err) {
+    console.error('Failed to proxy webcontainer:', err);
+    res.status(502).send(`// Error proxying webcontainer: ${err.message}`);
+  }
+});
+
+/**
  * Health check endpoint
  */
 app.get('/api/health', (req, res) => {
@@ -50,7 +71,7 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'GEMINI_API_KEY is missing. Configure it in .env or pass x-gemini-api-key header.' });
   }
 
-  const { prompt, fileContext, terminalError, model = 'gemini-2.0-flash', conversationHistory = [] } = req.body;
+  const { prompt, fileContext, terminalError, model = 'gemini-flash-latest', conversationHistory = [] } = req.body;
 
   if (!prompt && !terminalError) {
     return res.status(400).json({ error: 'Prompt or terminal error is required.' });
@@ -80,7 +101,10 @@ app.post('/api/chat', async (req, res) => {
   try {
     const response = await fetch(geminiEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-goog-api-key': apiKey
+      },
       body: JSON.stringify({
         system_instruction: {
           parts: [{ text: BOLT_SYSTEM_PROMPT }]
