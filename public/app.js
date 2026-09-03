@@ -658,10 +658,44 @@ function updateStaticPreviewFallback() {
       importMap.imports['./data/' + baseName + '.js'] = blobUrl;
     }
 
-    const mainFile = jsFiles.find(f => f.path.includes('main.jsx') || f.path.includes('main.js') || f.path.includes('index.jsx')) ||
-                     jsFiles.find(f => f.path.includes('App.jsx') || f.path.includes('App.js'));
+    // 1. Pick or synthesize root App component
+    let entryBlobUrl = blobUrls['src/App.jsx'] || blobUrls['src/main.jsx'] || blobUrls['src/App.tsx'];
 
-    const entryPath = mainFile ? mainFile.path : 'src/App.jsx';
+    if (!entryBlobUrl) {
+      // Find all component files
+      const componentFiles = jsFiles.filter(f => f.path.includes('components/') || (f.path.endsWith('.jsx') && !f.path.includes('vite.config')));
+      const compImports = componentFiles.map((cf, i) => {
+        const norm = cf.path.replace(/^\.?\/?/, '');
+        return 'import Comp' + i + ' from "./' + norm + '";';
+      }).join(String.fromCharCode(10));
+
+      const compRenders = componentFiles.map((cf, i) => '<Comp' + i + ' />').join(String.fromCharCode(10) + '        ');
+
+      let syntheticCode = 'import React from "react";' + String.fromCharCode(10) +
+        compImports + String.fromCharCode(10) + String.fromCharCode(10) +
+        'export default function App() {' + String.fromCharCode(10) +
+        '  return (' + String.fromCharCode(10) +
+        '    <div className="min-h-screen bg-slate-900 text-white">' + String.fromCharCode(10) +
+        '      ' + (compRenders || '<div className="p-8 text-center text-xl font-bold">Rendering application...</div>') + String.fromCharCode(10) +
+        '    </div>' + String.fromCharCode(10) +
+        '  );' + String.fromCharCode(10) +
+        '}';
+
+      if (window.Babel) {
+        try {
+          syntheticCode = window.Babel.transform(syntheticCode, { presets: [['react', { runtime: 'classic' }]] }).code;
+        } catch (e) {}
+      }
+
+      const synBlob = URL.createObjectURL(new Blob([syntheticCode], { type: 'application/javascript' }));
+      blobUrls['src/App.jsx'] = synBlob;
+      importMap.imports['./src/App.jsx'] = synBlob;
+      importMap.imports['src/App.jsx'] = synBlob;
+      importMap.imports['./App.jsx'] = synBlob;
+      importMap.imports['./App'] = synBlob;
+      entryBlobUrl = synBlob;
+    }
+
     const cleanCss = cssContent.split('@tailwind').join('/* @tailwind */');
 
     const compiledHtml = `<!DOCTYPE html>
@@ -685,10 +719,11 @@ function updateStaticPreviewFallback() {
     import ReactDOM from 'react-dom/client';
 
     try {
-      const mod = await import('${entryPath}');
-      if (mod.default && !document.getElementById('root').hasChildNodes()) {
+      const mod = await import('${entryBlobUrl}');
+      const Component = mod.default || mod.App || mod.Hero || mod.Navbar || mod[Object.keys(mod)[0]];
+      if (Component && !document.getElementById('root').hasChildNodes()) {
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(React.createElement(mod.default));
+        root.render(React.createElement(Component));
       }
     } catch (err) {
       console.error('Preview error:', err);

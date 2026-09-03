@@ -140,7 +140,7 @@ export function createAgentTurnMessage({ prompt, fileContext = null, terminalErr
 
 ` : '';
 
-  message += `[INSTRUCTION FOR AI: You MUST format your response using <boltArtifact id="..." title="..."> and <boltAction type="file" filePath="..."> tags for every file so the in-browser IDE can write the code to the files and run it. Do NOT output code in standard markdown blocks outside boltAction tags.]`;
+  message += `[INSTRUCTION FOR AI: You MUST format your response using <boltArtifact id="..." title="..."> and <boltAction type="file" filePath="..."> tags for every file. You MUST ALWAYS include src/App.jsx and src/main.jsx connecting your components so the live preview can render. Do NOT output code in standard markdown blocks outside boltAction tags.]`;
 
   if (fileContext && Object.keys(fileContext).length > 0) {
     message += `
