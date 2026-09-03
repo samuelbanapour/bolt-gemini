@@ -432,7 +432,7 @@ body {
   flex: 1;
   position: relative;
   overflow: hidden;
-  background-color: white;
+  background-color: var(--bg-dark);
 }
 
 .view-panel {
@@ -452,6 +452,7 @@ body {
   width: 100%;
   height: 100%;
   border: none;
+  background-color: var(--bg-dark);
 }
 
 .preview-placeholder {

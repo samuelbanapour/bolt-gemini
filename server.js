@@ -21,7 +21,7 @@ app.use(express.json({ limit: '50mb' }));
 
 // CRITICAL: WebContainers require Cross-Origin Isolation headers to use SharedArrayBuffer
 app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   next();
 });

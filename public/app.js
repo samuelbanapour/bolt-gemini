@@ -428,12 +428,18 @@ async function executeGeminiTurn(prompt, terminalError = null) {
       const icon = action.type === 'file' ? '📄' : '⚙️';
       const label = action.type === 'file' ? action.filePath : action.content;
       actionItem.innerHTML = `<span class="action-status">⏳</span> ${icon} <span>${escapeHtml(label || '')}</span>`;
+      action.element = actionItem;
       currentArtifactEl.appendChild(actionItem);
       chatMessages.scrollTop = chatMessages.scrollHeight;
     },
     async onActionComplete(action) {
+      if (action.element) {
+        const statusSpan = action.element.querySelector('.action-status');
+        if (statusSpan) statusSpan.textContent = '✔';
+      }
       if (action.type === 'file') {
         await writeFileToSandbox(action.filePath, action.content);
+        updateStaticPreviewFallback();
       } else if (action.type === 'shell') {
         await runCommand(action.content, false);
       } else if (action.type === 'start') {
@@ -514,6 +520,7 @@ async function executeGeminiTurn(prompt, terminalError = null) {
     if (statusIndicator) {
       statusIndicator.textContent = webcontainerInstance ? "Sandbox: Ready" : "Sandbox: Direct Mode";
     }
+    updateStaticPreviewFallback();
   }
 }
 
