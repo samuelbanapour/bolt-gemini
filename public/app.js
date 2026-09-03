@@ -490,6 +490,10 @@ async function executeGeminiTurn(prompt, terminalError = null) {
               parser.write(data.chunk);
             }
             if (data.error) {
+              if (statusIndicator) {
+                statusIndicator.textContent = webcontainerInstance ? "Sandbox: Ready" : "Sandbox: Direct Mode";
+              }
+              if (btnSend) btnSend.disabled = false;
               if (terminal) terminal.writeln(`\r
 \x1b[31m[Gemini Error] ${data.error}\x1b[0m`);
               explanationEl.innerHTML += `<p style="color:#ef4444;">${escapeHtml(data.error)}</p>`;
@@ -507,6 +511,9 @@ async function executeGeminiTurn(prompt, terminalError = null) {
     explanationEl.innerHTML += `<p style="color: #ef4444;">Error: ${escapeHtml(err.message)}</p>`;
   } finally {
     if (btnSend) btnSend.disabled = false;
+    if (statusIndicator) {
+      statusIndicator.textContent = webcontainerInstance ? "Sandbox: Ready" : "Sandbox: Direct Mode";
+    }
   }
 }
 

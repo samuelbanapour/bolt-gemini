@@ -63,7 +63,7 @@ app.get('/api/health', (req, res) => {
 
 /**
  * Streaming Gemini AI Chat Endpoint
- * Uses Gemini API Server-Sent Events (SSE) to stream tokens directly to the browser
+ * Uses Gemini API Server-Sent Events (SSE) with automatic fallback across models
  */
 app.post('/api/chat', async (req, res) => {
   const apiKey = process.env.GEMINI_API_KEY || req.headers['x-gemini-api-key'];
@@ -71,7 +71,7 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'GEMINI_API_KEY is missing. Configure it in .env or pass x-gemini-api-key header.' });
   }
 
-  const { prompt, fileContext, terminalError, model = 'gemini-flash-latest', conversationHistory = [] } = req.body;
+  const { prompt, fileContext, terminalError, model = 'gemini-2.0-flash', conversationHistory = [] } = req.body;
 
   if (!prompt && !terminalError) {
     return res.status(400).json({ error: 'Prompt or terminal error is required.' });
@@ -92,38 +92,71 @@ app.post('/api/chat', async (req, res) => {
     }
   ];
 
-  const geminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
-
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  try {
-    const response = await fetch(geminiEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-goog-api-key': apiKey
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: BOLT_SYSTEM_PROMPT }]
+  // Automatic multi-model fallback chain to handle 503 capacity spikes
+  const candidateModels = [
+    model,
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-8b',
+    'gemini-flash-latest',
+    'gemini-1.5-pro'
+  ].filter((m, i, arr) => arr.indexOf(m) === i && !!m);
+
+  let activeResponse = null;
+  let lastErrorText = '';
+
+  for (const candidate of candidateModels) {
+    const geminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:streamGenerateContent?alt=sse&key=${apiKey}`;
+    try {
+      const response = await fetch(geminiEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-goog-api-key': apiKey
         },
-        contents,
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 8192
-        }
-      })
-    });
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: BOLT_SYSTEM_PROMPT }]
+          },
+          contents,
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 8192
+          }
+        })
+      });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      res.write(`data: ${JSON.stringify({ error: `Gemini API error: ${errText}` })}${LF}${LF}`);
-      return res.end();
+      if (response.ok) {
+        activeResponse = response;
+        console.log(`[Gemini] Successfully streaming via model: ${candidate}`);
+        break;
+      }
+
+      lastErrorText = await response.text();
+      console.warn(`[Gemini] Model ${candidate} returned ${response.status}. Trying next fallback...`);
+
+      // If 503 (high demand) or 429 (rate limit), continue to next model in pool
+      if (response.status === 503 || response.status === 429) {
+        continue;
+      } else {
+        break;
+      }
+    } catch (e) {
+      lastErrorText = e.message;
     }
+  }
 
-    const reader = response.body.getReader();
+  if (!activeResponse) {
+    res.write(`data: ${JSON.stringify({ error: `Gemini API error: ${lastErrorText}` })}${LF}${LF}`);
+    return res.end();
+  }
+
+  try {
+    const reader = activeResponse.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -154,7 +187,7 @@ app.post('/api/chat', async (req, res) => {
     res.write(`data: ${JSON.stringify({ done: true })}${LF}${LF}`);
     res.end();
   } catch (err) {
-    console.error('Chat endpoint error:', err);
+    console.error('Chat endpoint stream error:', err);
     res.write(`data: ${JSON.stringify({ error: err.message })}${LF}${LF}`);
     res.end();
   }
