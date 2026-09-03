@@ -680,6 +680,7 @@ class ClientArtifactParser {
     this.currentIndex = 0;
     this.currentArtifact = null;
     this.currentAction = null;
+    this.extractedFiles = new Set();
   }
 
   write(chunk) {
@@ -690,57 +691,71 @@ class ClientArtifactParser {
   _process() {
     while (this.currentIndex < this.buffer.length) {
       if (!this.currentArtifact) {
-        const artifactMatch = this.buffer.slice(this.currentIndex).match(/<boltArtifact\s+id="([^"]+)"\s+title="([^"]+)">/);
+        // Flexible case-insensitive match for <boltArtifact ...>
+        const artifactMatch = this.buffer.slice(this.currentIndex).match(/<boltArtifact\b([^>]*)>/i);
         if (artifactMatch) {
           const matchIndex = this.currentIndex + artifactMatch.index;
           const preText = this.buffer.slice(this.currentIndex, matchIndex);
           if (preText) this.callbacks.onExplanationChunk(preText);
 
-          this.currentArtifact = { id: artifactMatch[1], title: artifactMatch[2] };
+          const attrs = artifactMatch[1] || '';
+          const id = (attrs.match(/\bid=["']?([^"'\s>]+)["']?/i) || [])[1] || 'web-app';
+          const title = (attrs.match(/\btitle=["']?([^"'>]+)["']?/i) || [])[1] || 'Generated Project';
+
+          this.currentArtifact = { id, title };
           this.callbacks.onArtifactStart(this.currentArtifact);
           this.currentIndex = matchIndex + artifactMatch[0].length;
         } else {
+          // Check for code blocks in remaining text
           const remaining = this.buffer.slice(this.currentIndex);
-          const idx = remaining.lastIndexOf('<boltArtifact');
-          if (idx !== -1) {
-            this.callbacks.onExplanationChunk(remaining.slice(0, idx));
-            this.currentIndex += idx;
+          const partialTag = remaining.lastIndexOf('<boltArtifact');
+          if (partialTag !== -1) {
+            const pre = remaining.slice(0, partialTag);
+            if (pre) this.callbacks.onExplanationChunk(pre);
+            this.currentIndex += partialTag;
             break;
           } else {
-            this.callbacks.onExplanationChunk(remaining);
-            this.currentIndex = this.buffer.length;
+            this._checkMarkdownFiles(remaining);
+            break;
           }
         }
       } else if (!this.currentAction) {
         const remaining = this.buffer.slice(this.currentIndex);
-        const artEnd = remaining.indexOf('</boltArtifact>');
-        const actMatch = remaining.match(/<boltAction\s+type="(file|shell|start)"(?:\s+filePath="([^"]*)")?>/);
+        const artEndMatch = remaining.match(/<\/boltArtifact\s*>/i);
+        const actMatch = remaining.match(/<boltAction\b([^>]*)>/i);
 
-        if (actMatch && (artEnd === -1 || actMatch.index < artEnd)) {
-          this.currentAction = { type: actMatch[1], filePath: actMatch[2] || null, content: '' };
+        if (actMatch && (!artEndMatch || actMatch.index < artEndMatch.index)) {
+          const attrs = actMatch[1] || '';
+          const type = (attrs.match(/\btype=["']?([a-z0-9_-]+)["']?/i) || [])[1] || 'file';
+          const filePath = (attrs.match(/\b(?:filePath|path)=["']?([^"'\s>]+)["']?/i) || [])[1] || null;
+
+          this.currentAction = { type, filePath, content: '' };
           this.callbacks.onActionStart(this.currentAction);
           this.currentIndex += actMatch.index + actMatch[0].length;
-        } else if (artEnd !== -1) {
+        } else if (artEndMatch) {
           this.callbacks.onArtifactComplete(this.currentArtifact);
-          this.currentIndex += artEnd + '</boltArtifact>'.length;
+          this.currentIndex += artEndMatch.index + artEndMatch[0].length;
           this.currentArtifact = null;
         } else {
           break;
         }
       } else {
         const remaining = this.buffer.slice(this.currentIndex);
-        const actEnd = remaining.indexOf('</boltAction>');
+        const endMatch = remaining.match(/<\/boltAction\s*>|(?=<boltAction\b)|(?=<\/boltArtifact\s*>)/i);
 
-        if (actEnd !== -1) {
-          this.currentAction.content += remaining.slice(0, actEnd);
+        if (endMatch) {
+          this.currentAction.content += remaining.slice(0, endMatch.index);
+          this.currentAction.content = this._cleanActionContent(this.currentAction.content);
           this.callbacks.onActionComplete(this.currentAction);
-          this.currentIndex += actEnd + '</boltAction>'.length;
+
+          let skipLen = endMatch[0].length;
+          this.currentIndex += endMatch.index + skipLen;
           this.currentAction = null;
         } else {
-          const partEnd = remaining.lastIndexOf('</');
-          if (partEnd !== -1) {
-            this.currentAction.content += remaining.slice(0, partEnd);
-            this.currentIndex += partEnd;
+          const partialEnd = remaining.lastIndexOf('</');
+          if (partialEnd !== -1) {
+            this.currentAction.content += remaining.slice(0, partialEnd);
+            this.currentIndex += partialEnd;
             break;
           } else {
             this.currentAction.content += remaining;
@@ -751,9 +766,50 @@ class ClientArtifactParser {
     }
   }
 
+  _cleanActionContent(content) {
+    let cleaned = content.trim();
+    if (cleaned.startsWith('```')) {
+      const firstLineEnd = cleaned.indexOf(String.fromCharCode(10));
+      if (firstLineEnd !== -1) {
+        cleaned = cleaned.slice(firstLineEnd + 1);
+      }
+      const lastLineStart = cleaned.lastIndexOf('```');
+      if (lastLineStart !== -1) {
+        cleaned = cleaned.slice(0, lastLineStart);
+      }
+    }
+    return cleaned.trim();
+  }
+
+  _checkMarkdownFiles(text) {
+    const fileRegex = new RegExp('(?:###?\s*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?|File:\s*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?|```[a-zA-Z0-9_-]*\s+(?:filePath=)?["\x27]?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)["\x27]?)[\s\S]*?```[a-zA-Z0-9_-]*[\r\n]+([\s\S]*?)```', 'g');
+    let match;
+    while ((match = fileRegex.exec(text)) !== null) {
+      const filePath = match[1] || match[2] || match[3];
+      const content = match[4];
+      if (filePath && content && !this.extractedFiles.has(filePath)) {
+        this.extractedFiles.add(filePath);
+        if (!this.currentArtifact) {
+          this.callbacks.onArtifactStart({ id: 'app', title: 'Extracted Project' });
+        }
+        this.callbacks.onActionStart({ type: 'file', filePath, content });
+        this.callbacks.onActionComplete({ type: 'file', filePath, content });
+      }
+    }
+    this.callbacks.onExplanationChunk(text);
+    this.currentIndex = this.buffer.length;
+  }
+
   end() {
-    if (this.currentIndex < this.buffer.length && !this.currentArtifact) {
-      this.callbacks.onExplanationChunk(this.buffer.slice(this.currentIndex));
+    if (this.currentIndex < this.buffer.length) {
+      if (!this.currentArtifact) {
+        this._checkMarkdownFiles(this.buffer.slice(this.currentIndex));
+      } else if (this.currentAction) {
+        this.currentAction.content += this.buffer.slice(this.currentIndex);
+        this.currentAction.content = this._cleanActionContent(this.currentAction.content);
+        this.callbacks.onActionComplete(this.currentAction);
+        this.currentAction = null;
+      }
       this.currentIndex = this.buffer.length;
     }
   }
