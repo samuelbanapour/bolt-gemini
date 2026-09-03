@@ -172,8 +172,7 @@ function initMonaco() {
       window.require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.51.0/min/vs' } });
       window.require(['vs/editor/editor.main'], () => {
         monacoEditor = monaco.editor.create(monacoContainer, {
-          value: '// Welcome to Bolt.gemini
-// Type a prompt on the left to generate and run your application in real-time.',
+          value: '// Welcome to Bolt.gemini' + String.fromCharCode(10) + '// Type a prompt on the left to generate and run your application in real-time.',
           language: 'javascript',
           theme: 'vs-dark',
           automaticLayout: true,
@@ -211,8 +210,7 @@ function setupFallbackEditor() {
   if (!container || container.querySelector('textarea')) return;
   container.innerHTML = `<textarea id="fallback-code-editor" style="width:100%;height:100%;background:#1e1e1e;color:#f1f3f9;font-family:monospace;padding:1rem;border:none;outline:none;resize:none;font-size:13px;"></textarea>`;
   const textarea = document.getElementById('fallback-code-editor');
-  textarea.value = '// Welcome to Bolt.gemini
-// Enter a prompt on the left to generate code.';
+  textarea.value = '// Welcome to Bolt.gemini' + String.fromCharCode(10) + '// Enter a prompt on the left to generate code.';
   textarea.addEventListener('input', async () => {
     if (!currentOpenFilePath) return;
     virtualFileSystem.set(currentOpenFilePath, textarea.value);
@@ -295,8 +293,7 @@ async function initWebContainer() {
     });
 
     if (terminal) {
-      terminal.writeln('\x1b[1;32m✔ WebContainer Node.js sandbox ready.\x1b[0m\r
-');
+      terminal.writeln('\x1b[1;32m✔ WebContainer Node.js sandbox ready.\x1b[0m');
     }
   } catch (err) {
     console.warn('WebContainer boot issue:', err);
@@ -415,8 +412,7 @@ async function executeGeminiTurn(prompt, terminalError = null) {
 
   const parser = new ClientArtifactParser({
     onExplanationChunk(chunk) {
-      explanationEl.innerHTML += escapeHtml(chunk).replace(/
-/g, '<br>');
+      explanationEl.innerHTML += chunk.split(String.fromCharCode(10)).map(escapeHtml).join('<br>');
       chatMessages.scrollTop = chatMessages.scrollHeight;
     },
     onArtifactStart(artifact) {
@@ -482,8 +478,7 @@ async function executeGeminiTurn(prompt, terminalError = null) {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('
-');
+      const lines = buffer.split(String.fromCharCode(10));
       buffer = lines.pop() || '';
 
       for (let rawLine of lines) {
