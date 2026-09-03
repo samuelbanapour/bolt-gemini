@@ -71,7 +71,7 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'GEMINI_API_KEY is missing. Configure it in .env or pass x-gemini-api-key header.' });
   }
 
-  const { prompt, fileContext, terminalError, model = 'gemini-2.0-flash', conversationHistory = [] } = req.body;
+  const { prompt, fileContext, terminalError, model = 'gemini-3.6-flash', conversationHistory = [] } = req.body;
 
   if (!prompt && !terminalError) {
     return res.status(400).json({ error: 'Prompt or terminal error is required.' });
@@ -99,10 +99,9 @@ app.post('/api/chat', async (req, res) => {
   // Automatic multi-model fallback chain to handle 503 capacity spikes
   const candidateModels = [
     model,
-    'gemini-2.0-flash',
+    'gemini-3.6-flash',
+    'gemini-2.5-flash',
     'gemini-1.5-flash',
-    'gemini-1.5-flash-8b',
-    'gemini-flash-latest',
     'gemini-1.5-pro'
   ].filter((m, i, arr) => arr.indexOf(m) === i && !!m);
 
@@ -140,7 +139,7 @@ app.post('/api/chat', async (req, res) => {
       console.warn(`[Gemini] Model ${candidate} returned ${response.status}. Trying next fallback...`);
 
       // If 503 (high demand) or 429 (rate limit), continue to next model in pool
-      if (response.status === 503 || response.status === 429) {
+      if (response.status === 503 || response.status === 429 || response.status === 404) {
         continue;
       } else {
         break;
