@@ -1,0 +1,599 @@
+/**
+ * Bolt.gemini Client-Side Application Controller
+ * Handles WebContainer lifecycle, Monaco Editor, Terminal,
+ * Streaming Gemini AI responses, and Render instant deployments.
+ */
+
+import { WebContainer } from 'https://unpkg.com/@webcontainer/api@1.5.1/dist/index.js';
+
+// Application State
+let webcontainerInstance = null;
+let monacoEditor = null;
+let terminal = null;
+let fitAddon = null;
+let currentOpenFilePath = null;
+const virtualFileSystem = new Map(); // path -> content
+let conversationHistory = [];
+
+// DOM Elements
+const statusIndicator = document.getElementById('status-indicator');
+const chatMessages = document.getElementById('chat-messages');
+const promptInput = document.getElementById('prompt-input');
+const btnSend = document.getElementById('btn-send');
+const fileTabs = document.getElementById('file-tabs');
+const treeContent = document.getElementById('tree-content');
+const previewFrame = document.getElementById('preview-frame');
+const previewPlaceholder = document.getElementById('preview-placeholder');
+const previewOpenLink = document.getElementById('preview-open-link');
+const btnRefreshPreview = document.getElementById('btn-refresh-preview');
+const tabPreview = document.getElementById('tab-preview');
+const tabTerminal = document.getElementById('tab-terminal');
+const previewWrapper = document.getElementById('preview-wrapper');
+const terminalWrapper = document.getElementById('terminal-wrapper');
+const btnDeploy = document.getElementById('btn-deploy');
+const deployModal = document.getElementById('deploy-modal');
+const btnCloseDeploy = document.getElementById('btn-close-deploy');
+const btnConfirmDeploy = document.getElementById('btn-confirm-deploy');
+const deployProjectName = document.getElementById('deploy-project-name');
+const deployStatusBox = document.getElementById('deploy-status-box');
+const deployStatusText = document.getElementById('deploy-status-text');
+const deploySuccessBox = document.getElementById('deploy-success-box');
+const deployLiveUrl = document.getElementById('deploy-live-url');
+const btnSettings = document.getElementById('btn-settings');
+const settingsModal = document.getElementById('settings-modal');
+const btnCloseSettings = document.getElementById('btn-close-settings');
+const btnSaveSettings = document.getElementById('btn-save-settings');
+const inputGeminiKey = document.getElementById('input-gemini-key');
+const inputRenderKey = document.getElementById('input-render-key');
+
+// Initialize IDE
+window.addEventListener('DOMContentLoaded', async () => {
+  initSettings();
+  initTabs();
+  initTerminal();
+  initMonaco();
+  await initWebContainer();
+});
+
+function initSettings() {
+  inputGeminiKey.value = localStorage.getItem('gemini_api_key') || '';
+  inputRenderKey.value = localStorage.getItem('render_api_key') || '';
+
+  btnSettings.addEventListener('click', () => settingsModal.classList.remove('hidden'));
+  btnCloseSettings.addEventListener('click', () => settingsModal.classList.add('hidden'));
+  btnSaveSettings.addEventListener('click', () => {
+    localStorage.setItem('gemini_api_key', inputGeminiKey.value.trim());
+    localStorage.setItem('render_api_key', inputRenderKey.value.trim());
+    settingsModal.classList.add('hidden');
+  });
+
+  // Suggestion chips
+  document.querySelectorAll('.suggestion-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      promptInput.value = chip.textContent.replace(/^"|"$/g, '');
+      promptInput.focus();
+    });
+  });
+}
+
+function initTabs() {
+  tabPreview.addEventListener('click', () => {
+    tabPreview.classList.add('active');
+    tabTerminal.classList.remove('active');
+    previewWrapper.classList.add('active');
+    terminalWrapper.classList.remove('active');
+  });
+
+  tabTerminal.addEventListener('click', () => {
+    tabTerminal.classList.add('active');
+    tabPreview.classList.remove('active');
+    terminalWrapper.classList.add('active');
+    previewWrapper.classList.remove('active');
+    if (fitAddon) fitAddon.fit();
+  });
+
+  btnRefreshPreview.addEventListener('click', () => {
+    if (previewFrame.src && previewFrame.src !== 'about:blank') {
+      const current = previewFrame.src;
+      previewFrame.src = 'about:blank';
+      setTimeout(() => { previewFrame.src = current; }, 50);
+    }
+  });
+}
+
+function initTerminal() {
+  terminal = new Terminal({
+    convertEol: true,
+    fontSize: 13,
+    fontFamily: 'JetBrains Mono, Fira Code, monospace',
+    theme: {
+      background: '#000000',
+      foreground: '#d4d4d4'
+    }
+  });
+
+  fitAddon = new FitAddon.FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open(document.getElementById('terminal-container'));
+  fitAddon.fit();
+
+  terminal.writeln('\x1b[1;34m⚡ Bolt.gemini Terminal Initialized\x1b[0m');
+}
+
+function initMonaco() {
+  window.require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.51.0/min/vs' } });
+  window.require(['vs/editor/editor.main'], () => {
+    monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
+      value: '// Welcome to Bolt.gemini
+// Type a prompt on the left to generate and run your application in real-time.',
+      language: 'javascript',
+      theme: 'vs-dark',
+      automaticLayout: true,
+      minimap: { enabled: false },
+      fontSize: 13
+    });
+
+    // Save edits from Monaco back to virtual filesystem & WebContainer
+    monacoEditor.onDidChangeModelContent(async () => {
+      if (!currentOpenFilePath || !webcontainerInstance) return;
+      const updatedValue = monacoEditor.getValue();
+      virtualFileSystem.set(currentOpenFilePath, updatedValue);
+      try {
+        await webcontainerInstance.fs.writeFile(currentOpenFilePath, updatedValue);
+      } catch (err) {
+        console.warn('Sync to WebContainer failed:', err);
+      }
+    });
+  });
+}
+
+async function initWebContainer() {
+  try {
+    statusIndicator.textContent = 'Sandbox: Booting Node.js WASM...';
+    webcontainerInstance = await WebContainer.boot();
+    statusIndicator.textContent = 'Sandbox: Ready';
+    statusIndicator.style.color = '#10b981';
+    btnDeploy.disabled = false;
+
+    // Listen for dev server ready event
+    webcontainerInstance.on('server-ready', (port, url) => {
+      terminal.writeln(`\r
+\x1b[1;32m⚡ Server ready at: ${url} (port ${port})\x1b[0m\r
+`);
+      previewFrame.src = url;
+      previewPlaceholder.classList.add('hidden');
+      previewOpenLink.href = url;
+      // Switch view to preview
+      tabPreview.click();
+    });
+
+    // Handle internal errors
+    webcontainerInstance.on('error', (err) => {
+      terminal.writeln(`\r
+\x1b[1;31m[WebContainer Error] ${err.message}\x1b[0m\r
+`);
+    });
+  } catch (err) {
+    console.error('Failed to boot WebContainer:', err);
+    statusIndicator.textContent = 'Sandbox: Boot Failed';
+    statusIndicator.style.color = '#ef4444';
+    terminal.writeln(`\r
+\x1b[1;31mFailed to boot WebContainer: ${err.message}\x1b[0m`);
+    terminal.writeln(`\x1b[33mEnsure browser supports Cross-Origin Isolation (COOP & COEP headers).\x1b[0m\r
+`);
+  }
+}
+
+/**
+ * Execute command inside WebContainer and stream to xterm.js
+ */
+async function runCommand(commandStr, isBackground = false) {
+  if (!webcontainerInstance) return;
+
+  terminal.writeln(`\r
+\x1b[1;36m$ ${commandStr}\x1b[0m\r
+`);
+  const parts = commandStr.trim().split(/\s+/);
+  const cmd = parts[0];
+  const args = parts.slice(1);
+
+  const process = await webcontainerInstance.spawn(cmd, args);
+
+  let capturedStderr = '';
+  process.output.pipeTo(
+    new WritableStream({
+      write(data) {
+        terminal.write(data);
+        if (data.toLowerCase().includes('error') || data.toLowerCase().includes('failed')) {
+          capturedStderr += data;
+        }
+      }
+    })
+  );
+
+  if (!isBackground) {
+    const exitCode = await process.exit;
+    if (exitCode !== 0) {
+      terminal.writeln(`\r
+\x1b[1;31mCommand exited with code ${exitCode}\x1b[0m\r
+`);
+      // Offer auto-heal turn
+      if (capturedStderr) {
+        handleAutoHeal(capturedStderr);
+      }
+    }
+    return exitCode;
+  }
+}
+
+/**
+ * Auto-heal error loop
+ */
+function handleAutoHeal(errorMessage) {
+  const autoFixNotice = document.createElement('div');
+  autoFixNotice.className = 'message assistant';
+  autoFixNotice.innerHTML = `
+    <p>⚠️ <strong>Build/Runtime Error detected:</strong></p>
+    <pre style="font-size: 0.75rem; color: #f87171; overflow-x: auto; margin: 0.5rem 0;">${escapeHtml(errorMessage.slice(0, 300))}</pre>
+    <button class="btn btn-secondary btn-sm" id="btn-fix-error">🛠️ Ask Gemini to Auto-Fix</button>
+  `;
+  chatMessages.appendChild(autoFixNotice);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  document.getElementById('btn-fix-error').addEventListener('click', () => {
+    executeGeminiTurn('', errorMessage);
+  });
+}
+
+/**
+ * Chat Submission Handler
+ */
+btnSend.addEventListener('click', () => {
+  const prompt = promptInput.value.trim();
+  if (!prompt) return;
+  promptInput.value = '';
+  executeGeminiTurn(prompt);
+});
+
+promptInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    btnSend.click();
+  }
+});
+
+/**
+ * Execute Gemini Agent Turn via SSE
+ */
+async function executeGeminiTurn(prompt, terminalError = null) {
+  if (prompt) {
+    appendUserMessage(prompt);
+  }
+
+  btnSend.disabled = true;
+  statusIndicator.textContent = 'Gemini: Generating solution...';
+
+  // Prepare current files for context
+  const fileContext = {};
+  for (const [path, content] of virtualFileSystem.entries()) {
+    // Only send key files to keep context concise
+    if (!path.includes('node_modules') && !path.includes('package-lock.json')) {
+      fileContext[path] = content.slice(0, 3000); // cap file length
+    }
+  }
+
+  const assistantMsgEl = document.createElement('div');
+  assistantMsgEl.className = 'message assistant';
+  chatMessages.appendChild(assistantMsgEl);
+
+  const explanationEl = document.createElement('div');
+  assistantMsgEl.appendChild(explanationEl);
+
+  let currentArtifactEl = null;
+
+  // Stream parser instance
+  const parser = new ClientArtifactParser({
+    onExplanationChunk(chunk) {
+      explanationEl.innerHTML += escapeHtml(chunk).replace(/
+/g, '<br>');
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+    onArtifactStart(artifact) {
+      currentArtifactEl = document.createElement('div');
+      currentArtifactEl.className = 'artifact-box';
+      currentArtifactEl.innerHTML = `<div class="artifact-title">⚡ ${escapeHtml(artifact.title)}</div>`;
+      assistantMsgEl.appendChild(currentArtifactEl);
+    },
+    async onActionStart(action) {
+      if (!currentArtifactEl) return;
+      const actionItem = document.createElement('div');
+      actionItem.className = 'action-item';
+      actionItem.id = `action-${Date.now()}`;
+      const icon = action.type === 'file' ? '📄' : '⚙️';
+      const label = action.type === 'file' ? action.filePath : action.content;
+      actionItem.innerHTML = `<span class="action-status">⏳</span> ${icon} <span>${escapeHtml(label || '')}</span>`;
+      currentArtifactEl.appendChild(actionItem);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    },
+    async onActionComplete(action) {
+      if (action.type === 'file') {
+        await writeFileToSandbox(action.filePath, action.content);
+      } else if (action.type === 'shell') {
+        await runCommand(action.content, false);
+      } else if (action.type === 'start') {
+        await runCommand(action.content, true);
+      }
+    },
+    onArtifactComplete() {
+      statusIndicator.textContent = 'Sandbox: Ready';
+    }
+  });
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    const userGeminiKey = localStorage.getItem('gemini_api_key');
+    if (userGeminiKey) headers['x-gemini-api-key'] = userGeminiKey;
+
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        prompt,
+        terminalError,
+        fileContext,
+        conversationHistory
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Chat request failed');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('
+');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.chunk) {
+              parser.write(data.chunk);
+            }
+            if (data.error) {
+              terminal.writeln(`\r
+\x1b[31m[Gemini Error] ${data.error}\x1b[0m`);
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    parser.end();
+    if (prompt) {
+      conversationHistory.push({ role: 'user', content: prompt });
+    }
+  } catch (err) {
+    explanationEl.innerHTML += `<p style="color: #ef4444;">Error: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    btnSend.disabled = false;
+  }
+}
+
+async function writeFileToSandbox(filePath, content) {
+  if (!webcontainerInstance) return;
+
+  // Ensure directory exists
+  const segments = filePath.split('/');
+  if (segments.length > 1) {
+    const dir = segments.slice(0, -1).join('/');
+    await webcontainerInstance.fs.mkdir(dir, { recursive: true });
+  }
+
+  await webcontainerInstance.fs.writeFile(filePath, content);
+  virtualFileSystem.set(filePath, content);
+
+  updateFileTree();
+
+  // If this is the active file in Monaco, update editor
+  if (currentOpenFilePath === filePath && monacoEditor) {
+    monacoEditor.setValue(content);
+  } else if (!currentOpenFilePath) {
+    openFile(filePath);
+  }
+}
+
+function updateFileTree() {
+  treeContent.innerHTML = '';
+  const files = Array.from(virtualFileSystem.keys()).sort();
+
+  for (const file of files) {
+    const el = document.createElement('div');
+    el.className = `tree-file ${file === currentOpenFilePath ? 'active' : ''}`;
+    el.textContent = file;
+    el.addEventListener('click', () => openFile(file));
+    treeContent.appendChild(el);
+  }
+}
+
+function openFile(filePath) {
+  currentOpenFilePath = filePath;
+  const content = virtualFileSystem.get(filePath) || '';
+
+  // Update tabs
+  fileTabs.innerHTML = `<div class="tab active">${filePath}</div>`;
+
+  // Update editor model
+  if (monacoEditor) {
+    const ext = filePath.split('.').pop();
+    const langMap = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', html: 'html', css: 'css', json: 'json' };
+    const lang = langMap[ext] || 'plaintext';
+    const model = monaco.editor.createModel(content, lang);
+    monacoEditor.setModel(model);
+  }
+
+  updateFileTree();
+}
+
+function appendUserMessage(text) {
+  const msgEl = document.createElement('div');
+  msgEl.className = 'message user';
+  msgEl.textContent = text;
+  chatMessages.appendChild(msgEl);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Render Instant Deployment Integration
+ */
+btnDeploy.addEventListener('click', () => {
+  deployModal.classList.remove('hidden');
+  deploySuccessBox.classList.add('hidden');
+  deployStatusBox.classList.add('hidden');
+  deployProjectName.value = 'app-' + Math.random().toString(36).substring(2, 7);
+});
+
+btnCloseDeploy.addEventListener('click', () => deployModal.classList.add('hidden'));
+
+btnConfirmDeploy.addEventListener('click', async () => {
+  const name = deployProjectName.value.trim();
+  const renderApiKey = localStorage.getItem('render_api_key');
+
+  deployStatusBox.classList.remove('hidden');
+  btnConfirmDeploy.disabled = true;
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (renderApiKey) headers['x-render-api-key'] = renderApiKey;
+
+    const res = await fetch('/api/deploy', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        projectName: name,
+        buildCommand: 'npm run build',
+        publishPath: 'dist'
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Deployment initiation failed');
+
+    deployStatusText.textContent = `Service created: ${data.name}. Provisioning global CDN...`;
+
+    // Wait and display public URL
+    setTimeout(() => {
+      deployStatusBox.classList.add('hidden');
+      deploySuccessBox.classList.remove('hidden');
+      deployLiveUrl.href = data.url;
+      deployLiveUrl.textContent = data.url;
+      btnConfirmDeploy.disabled = false;
+    }, 4000);
+  } catch (err) {
+    deployStatusText.textContent = `Deploy error: ${err.message}`;
+    btnConfirmDeploy.disabled = false;
+  }
+});
+
+/**
+ * Client Artifact Parser implementation
+ */
+class ClientArtifactParser {
+  constructor(callbacks) {
+    this.callbacks = callbacks;
+    this.buffer = '';
+    this.currentIndex = 0;
+    this.currentArtifact = null;
+    this.currentAction = null;
+  }
+
+  write(chunk) {
+    this.buffer += chunk;
+    this._process();
+  }
+
+  _process() {
+    while (this.currentIndex < this.buffer.length) {
+      if (!this.currentArtifact) {
+        const artifactMatch = this.buffer.slice(this.currentIndex).match(/<boltArtifact\s+id="([^"]+)"\s+title="([^"]+)">/);
+        if (artifactMatch) {
+          const matchIndex = this.currentIndex + artifactMatch.index;
+          const preText = this.buffer.slice(this.currentIndex, matchIndex);
+          if (preText) this.callbacks.onExplanationChunk(preText);
+
+          this.currentArtifact = { id: artifactMatch[1], title: artifactMatch[2] };
+          this.callbacks.onArtifactStart(this.currentArtifact);
+          this.currentIndex = matchIndex + artifactMatch[0].length;
+        } else {
+          const remaining = this.buffer.slice(this.currentIndex);
+          const idx = remaining.lastIndexOf('<boltArtifact');
+          if (idx !== -1) {
+            this.callbacks.onExplanationChunk(remaining.slice(0, idx));
+            this.currentIndex += idx;
+            break;
+          } else {
+            this.callbacks.onExplanationChunk(remaining);
+            this.currentIndex = this.buffer.length;
+          }
+        }
+      } else if (!this.currentAction) {
+        const remaining = this.buffer.slice(this.currentIndex);
+        const artEnd = remaining.indexOf('</boltArtifact>');
+        const actMatch = remaining.match(/<boltAction\s+type="(file|shell|start)"(?:\s+filePath="([^"]*)")?>/);
+
+        if (actMatch && (artEnd === -1 || actMatch.index < artEnd)) {
+          this.currentAction = { type: actMatch[1], filePath: actMatch[2] || null, content: '' };
+          this.callbacks.onActionStart(this.currentAction);
+          this.currentIndex += actMatch.index + actMatch[0].length;
+        } else if (artEnd !== -1) {
+          this.callbacks.onArtifactComplete(this.currentArtifact);
+          this.currentIndex += artEnd + '</boltArtifact>'.length;
+          this.currentArtifact = null;
+        } else {
+          break;
+        }
+      } else {
+        const remaining = this.buffer.slice(this.currentIndex);
+        const actEnd = remaining.indexOf('</boltAction>');
+
+        if (actEnd !== -1) {
+          this.currentAction.content += remaining.slice(0, actEnd);
+          this.callbacks.onActionComplete(this.currentAction);
+          this.currentIndex += actEnd + '</boltAction>'.length;
+          this.currentAction = null;
+        } else {
+          const partEnd = remaining.lastIndexOf('</');
+          if (partEnd !== -1) {
+            this.currentAction.content += remaining.slice(0, partEnd);
+            this.currentIndex += partEnd;
+            break;
+          } else {
+            this.currentAction.content += remaining;
+            this.currentIndex = this.buffer.length;
+          }
+        }
+      }
+    }
+  }
+
+  end() {
+    if (this.currentIndex < this.buffer.length && !this.currentArtifact) {
+      this.callbacks.onExplanationChunk(this.buffer.slice(this.currentIndex));
+      this.currentIndex = this.buffer.length;
+    }
+  }
+}

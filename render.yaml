@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: bolt-gemini-platform
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.0.0
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: PORT
+        value: 3000
+    headers:
+      - path: /*
+        name: Cross-Origin-Embedder-Policy
+        value: require-corp
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin

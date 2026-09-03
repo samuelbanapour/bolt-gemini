@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bolt.gemini - AI Web IDE & Instant Deploy</title>
+  <link rel="stylesheet" href="/style.css">
+  <!-- xterm.js CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <!-- Monaco Editor loader -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.51.0/min/vs/loader.js"></script>
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="bolt-icon">⚡</span>
+        <span class="logo-title">Bolt<strong>.gemini</strong></span>
+      </div>
+      <div class="model-badge">Powered by Google Gemini 2.0</div>
+    </div>
+    <div class="header-center">
+      <span id="project-title" class="project-title">New Project</span>
+      <span id="status-indicator" class="status-indicator">Sandbox: Initializing...</span>
+    </div>
+    <div class="header-right">
+      <button id="btn-settings" class="btn btn-secondary">⚙️ Settings</button>
+      <button id="btn-deploy" class="btn btn-deploy" disabled>🚀 Deploy to Render</button>
+    </div>
+  </header>
+
+  <!-- Main IDE Workspace -->
+  <main class="ide-container">
+    <!-- Left Pane: Chat & Agent Logs -->
+    <section class="pane pane-chat">
+      <div class="pane-header">
+        <span>Prompt Assistant</span>
+      </div>
+      <div id="chat-messages" class="chat-messages">
+        <div class="message assistant">
+          <p>Hi! What would you like to build today? For example:</p>
+          <ul class="suggestion-list">
+            <li class="suggestion-chip">"Build a modern SaaS landing page with dark mode and pricing tables in Vite React"</li>
+            <li class="suggestion-chip">"Create a Kanban Task Board with drag-and-drop in Tailwind CSS"</li>
+            <li class="suggestion-chip">"Build an interactive Crypto Portfolio Tracker with charts"</li>
+          </ul>
+        </div>
+      </div>
+      <div class="chat-input-container">
+        <textarea id="prompt-input" placeholder="Describe the web application you want to build..." rows="3"></textarea>
+        <button id="btn-send" class="btn btn-primary">Generate</button>
+      </div>
+    </section>
+
+    <!-- Center Pane: File Explorer & Monaco Editor -->
+    <section class="pane pane-editor">
+      <div class="editor-header">
+        <div class="file-tabs" id="file-tabs">
+          <div class="tab active" data-path="welcome.txt">welcome.txt</div>
+        </div>
+      </div>
+      <div class="editor-workspace">
+        <div class="file-tree" id="file-tree">
+          <div class="file-tree-header">Files</div>
+          <div class="tree-content" id="tree-content">
+            <div class="tree-item empty">No files yet</div>
+          </div>
+        </div>
+        <div id="monaco-container" class="monaco-container"></div>
+      </div>
+    </section>
+
+    <!-- Right Pane: Live Preview & Terminal -->
+    <section class="pane pane-preview">
+      <div class="pane-header tabs-header">
+        <div class="view-tabs">
+          <button id="tab-preview" class="view-tab active">Live Preview</button>
+          <button id="tab-terminal" class="view-tab">Terminal</button>
+        </div>
+        <div class="preview-actions">
+          <button id="btn-refresh-preview" class="btn-icon" title="Reload Preview">🔄</button>
+          <a id="preview-open-link" class="btn-icon" target="_blank" title="Open in new window">↗</a>
+        </div>
+      </div>
+      <div class="view-content">
+        <div id="preview-wrapper" class="view-panel active">
+          <iframe id="preview-frame" src="about:blank"></iframe>
+          <div id="preview-placeholder" class="preview-placeholder">
+            <p>Dev server not started yet.</p>
+            <small>Submit a prompt to create the project and run the server.</small>
+          </div>
+        </div>
+        <div id="terminal-wrapper" class="view-panel">
+          <div id="terminal-container"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Settings / API Keys Modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Settings & API Keys</h3>
+        <button id="btn-close-settings" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <label for="input-gemini-key">Google Gemini API Key:</label>
+        <input type="password" id="input-gemini-key" placeholder="AIzaSy...">
+        <small>If not configured on the server, you can supply your key here.</small>
+
+        <label for="input-render-key" style="margin-top: 1rem;">Render API Key:</label>
+        <input type="password" id="input-render-key" placeholder="rnd_...">
+        <small>Required to trigger instant deploys to Render.</small>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Deploy Modal -->
+  <div id="deploy-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Deploy to Render</h3>
+        <button id="btn-close-deploy" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Deploy your project to Render's global cloud platform:</p>
+        <label for="deploy-project-name">Service Name:</label>
+        <input type="text" id="deploy-project-name" placeholder="my-awesome-app">
+
+        <div id="deploy-status-box" class="deploy-status-box hidden">
+          <div class="deploy-spinner"></div>
+          <div id="deploy-status-text">Creating service on Render...</div>
+        </div>
+
+        <div id="deploy-success-box" class="deploy-success-box hidden">
+          🎉 Successfully deployed!
+          <a id="deploy-live-url" href="#" target="_blank" class="deploy-link">Visit Live App</a>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-confirm-deploy" class="btn btn-deploy">Start Deployment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WebContainer API ESM module & App script -->
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
