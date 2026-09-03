@@ -585,17 +585,122 @@ function openFile(filePath) {
 }
 
 /**
- * Direct static HTML/CSS/JS preview fallback
+ * Direct static & React in-browser preview compiler
  */
 function updateStaticPreviewFallback() {
   if (webcontainerInstance && previewFrame.src && previewFrame.src.startsWith('http')) {
-    return; // dev server is running
+    return; // dev server is running in container
   }
 
-  const htmlContent = virtualFileSystem.get('index.html') || virtualFileSystem.get('public/index.html');
-  if (htmlContent && previewFrame) {
-    previewPlaceholder?.classList.add('hidden');
-    previewFrame.srcdoc = htmlContent;
+  const htmlFile = virtualFileSystem.get('index.html') || virtualFileSystem.get('public/index.html');
+  const cssContent = virtualFileSystem.get('src/index.css') || virtualFileSystem.get('index.css') || '';
+
+  const jsFiles = [];
+  for (const [filePath, content] of virtualFileSystem.entries()) {
+    if (filePath.endsWith('.js') || filePath.endsWith('.jsx') || filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
+      if (!filePath.includes('vite.config') && !filePath.includes('tailwind.config') && !filePath.includes('postcss.config')) {
+        jsFiles.push({ path: filePath, content });
+      }
+    }
+  }
+
+  if (jsFiles.length === 0 && !htmlFile) return;
+
+  if (previewPlaceholder) previewPlaceholder.classList.add('hidden');
+
+  // If simple standalone HTML without React JSX
+  if (htmlFile && !htmlFile.includes('src/main') && !htmlFile.includes('src/App') && jsFiles.length === 0) {
+    previewFrame.srcdoc = htmlFile;
+    return;
+  }
+
+  try {
+    const importMap = {
+      imports: {
+        "react": "https://esm.sh/react@18.3.1",
+        "react-dom": "https://esm.sh/react-dom@18.3.1",
+        "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.344.0",
+        "canvas-confetti": "https://esm.sh/canvas-confetti@1.9.3",
+        "clsx": "https://esm.sh/clsx@2.1.1",
+        "tailwind-merge": "https://esm.sh/tailwind-merge@2.3.0"
+      }
+    };
+
+    for (const file of jsFiles) {
+      let code = file.content;
+      if (window.Babel) {
+        try {
+          const transpiled = window.Babel.transform(code, {
+            presets: [['react', { runtime: 'classic' }]]
+          }).code;
+          code = transpiled;
+        } catch (err) {
+          console.warn('Babel error in ' + file.path + ':', err);
+        }
+      }
+
+      const blob = new Blob([code], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+
+      const norm = file.path.replace(/^\.?\/?/, '');
+      importMap.imports['/' + norm] = blobUrl;
+      importMap.imports['./' + norm] = blobUrl;
+      importMap.imports[norm] = blobUrl;
+
+      const baseName = norm.split('/').pop().replace(/\.[^/.]+$/, '');
+      importMap.imports['./' + baseName] = blobUrl;
+      importMap.imports['./' + baseName + '.jsx'] = blobUrl;
+      importMap.imports['./' + baseName + '.js'] = blobUrl;
+      importMap.imports['./components/' + baseName] = blobUrl;
+      importMap.imports['./components/' + baseName + '.jsx'] = blobUrl;
+      importMap.imports['./data/' + baseName] = blobUrl;
+      importMap.imports['./data/' + baseName + '.js'] = blobUrl;
+    }
+
+    const mainFile = jsFiles.find(f => f.path.includes('main.jsx') || f.path.includes('main.js') || f.path.includes('index.jsx')) ||
+                     jsFiles.find(f => f.path.includes('App.jsx') || f.path.includes('App.js'));
+
+    const entryPath = mainFile ? mainFile.path : 'src/App.jsx';
+    const cleanCss = cssContent.split('@tailwind').join('/* @tailwind */');
+
+    const compiledHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Preview</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    ${cleanCss}
+  </style>
+  <script type="importmap">
+    ${JSON.stringify(importMap, null, 2)}
+  </script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen">
+  <div id="root"></div>
+  <script type="module">
+    import React from 'react';
+    import ReactDOM from 'react-dom/client';
+
+    try {
+      const mod = await import('${entryPath}');
+      if (mod.default && !document.getElementById('root').hasChildNodes()) {
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(mod.default));
+      }
+    } catch (err) {
+      console.error('Preview error:', err);
+      document.getElementById('root').innerHTML = '<div style="padding:1.5rem;color:#f87171;font-family:monospace;font-size:13px;"><h3>Live Preview Error</h3><pre>' + err.message + '</pre></div>';
+    }
+  </script>
+</body>
+</html>`;
+
+    previewFrame.srcdoc = compiledHtml;
+  } catch (err) {
+    console.error('Preview compilation failed:', err);
   }
 }
 
