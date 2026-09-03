@@ -864,141 +864,148 @@ btnConfirmDeploy?.addEventListener('click', async () => {
 class ClientArtifactParser {
   constructor(callbacks) {
     this.callbacks = callbacks;
-    this.buffer = '';
-    this.currentIndex = 0;
+    this.buffer = "";
+    this.state = "INITIAL";
     this.currentArtifact = null;
     this.currentAction = null;
-    this.extractedFiles = new Set();
+    this.actionContent = "";
   }
 
   write(chunk) {
     this.buffer += chunk;
-    this._process();
+    this._parse();
   }
 
-  _process() {
-    while (this.currentIndex < this.buffer.length) {
-      if (!this.currentArtifact) {
-        // Flexible case-insensitive match for <boltArtifact ...>
-        const artifactMatch = this.buffer.slice(this.currentIndex).match(/<boltArtifact\b([^>]*)>/i);
-        if (artifactMatch) {
-          const matchIndex = this.currentIndex + artifactMatch.index;
-          const preText = this.buffer.slice(this.currentIndex, matchIndex);
-          if (preText) this.callbacks.onExplanationChunk(preText);
+  _parse() {
+    let advanced = true;
+    while (advanced) {
+      advanced = false;
 
-          const attrs = artifactMatch[1] || '';
-          const id = (attrs.match(/\bid=["']?([^"'\s>]+)["']?/i) || [])[1] || 'web-app';
-          const title = (attrs.match(/\btitle=["']?([^"'>]+)["']?/i) || [])[1] || 'Generated Project';
+      if (this.state === "INITIAL") {
+        const artStart = this.buffer.search(/<boltArtifact\b/i);
+        if (artStart !== -1) {
+          if (artStart > 0) {
+            this.callbacks.onExplanationChunk(this.buffer.slice(0, artStart));
+          }
+          this.buffer = this.buffer.slice(artStart);
 
-          this.currentArtifact = { id, title };
-          this.callbacks.onArtifactStart(this.currentArtifact);
-          this.currentIndex = matchIndex + artifactMatch[0].length;
+          const tagEnd = this.buffer.indexOf(">");
+          if (tagEnd !== -1) {
+            const tagStr = this.buffer.slice(0, tagEnd + 1);
+            const id = (tagStr.match(/\bid=["\x27]?([^"\x27\s>]+)["\x27]?/i) || [])[1] || "app";
+            const title = (tagStr.match(/\btitle=["\x27]?([^"\x27>]+)["\x27]?/i) || [])[1] || "Generated Project";
+
+            this.currentArtifact = { id, title };
+            this.callbacks.onArtifactStart(this.currentArtifact);
+            this.buffer = this.buffer.slice(tagEnd + 1);
+            this.state = "IN_ARTIFACT";
+            advanced = true;
+          }
         } else {
-          // Check for code blocks in remaining text
-          const remaining = this.buffer.slice(this.currentIndex);
-          const partialTag = remaining.lastIndexOf('<boltArtifact');
-          if (partialTag !== -1) {
-            const pre = remaining.slice(0, partialTag);
-            if (pre) this.callbacks.onExplanationChunk(pre);
-            this.currentIndex += partialTag;
-            break;
+          const possiblePartial = this.buffer.lastIndexOf("<");
+          if (possiblePartial !== -1 && "<boltartifact".startsWith(this.buffer.slice(possiblePartial).toLowerCase())) {
+            if (possiblePartial > 0) {
+              this.callbacks.onExplanationChunk(this.buffer.slice(0, possiblePartial));
+              this.buffer = this.buffer.slice(possiblePartial);
+            }
           } else {
-            this._checkMarkdownFiles(remaining);
-            break;
+            if (this.buffer) {
+              this.callbacks.onExplanationChunk(this.buffer);
+              this.buffer = "";
+            }
           }
         }
-      } else if (!this.currentAction) {
-        const remaining = this.buffer.slice(this.currentIndex);
-        const artEndMatch = remaining.match(/<\/boltArtifact\s*>/i);
-        const actMatch = remaining.match(/<boltAction\b([^>]*)>/i);
+      } else if (this.state === "IN_ARTIFACT") {
+        const actStart = this.buffer.search(/<boltAction\b/i);
+        const artEnd = this.buffer.search(/<\/boltArtifact\s*>/i);
 
-        if (actMatch && (!artEndMatch || actMatch.index < artEndMatch.index)) {
-          const attrs = actMatch[1] || '';
-          const type = (attrs.match(/\btype=["']?([a-z0-9_-]+)["']?/i) || [])[1] || 'file';
-          const filePath = (attrs.match(/\b(?:filePath|path)=["']?([^"'\s>]+)["']?/i) || [])[1] || null;
+        if (actStart !== -1 && (artEnd === -1 || actStart < artEnd)) {
+          this.buffer = this.buffer.slice(actStart);
+          const tagEnd = this.buffer.indexOf(">");
+          if (tagEnd !== -1) {
+            const tagStr = this.buffer.slice(0, tagEnd + 1);
+            const type = (tagStr.match(/\btype=["\x27]?([a-z0-9_-]+)["\x27]?/i) || [])[1] || "file";
+            const filePath = (tagStr.match(/\b(?:filePath|path)=["\x27]?([^"\x27\s>]+)["\x27]?/i) || [])[1] || null;
 
-          this.currentAction = { type, filePath, content: '' };
-          this.callbacks.onActionStart(this.currentAction);
-          this.currentIndex += actMatch.index + actMatch[0].length;
-        } else if (artEndMatch) {
+            this.currentAction = { type, filePath };
+            this.actionContent = "";
+            this.callbacks.onActionStart(this.currentAction);
+            this.buffer = this.buffer.slice(tagEnd + 1);
+            this.state = "IN_ACTION";
+            advanced = true;
+          }
+        } else if (artEnd !== -1) {
           this.callbacks.onArtifactComplete(this.currentArtifact);
-          this.currentIndex += artEndMatch.index + artEndMatch[0].length;
+          const closeTagEnd = this.buffer.indexOf(">", artEnd);
+          this.buffer = this.buffer.slice(closeTagEnd + 1);
+          this.state = "DONE";
           this.currentArtifact = null;
-        } else {
-          break;
+          advanced = true;
         }
-      } else {
-        const remaining = this.buffer.slice(this.currentIndex);
-        const endMatch = remaining.match(/<\/boltAction\s*>|(?=<boltAction\b)|(?=<\/boltArtifact\s*>)/i);
+      } else if (this.state === "IN_ACTION") {
+        const actEnd = this.buffer.search(/<\/boltAction\s*>/i);
+        if (actEnd !== -1) {
+          this.actionContent += this.buffer.slice(0, actEnd);
+          const closeTagEnd = this.buffer.indexOf(">", actEnd);
+          this.buffer = this.buffer.slice(closeTagEnd + 1);
 
-        if (endMatch) {
-          this.currentAction.content += remaining.slice(0, endMatch.index);
-          this.currentAction.content = this._cleanActionContent(this.currentAction.content);
-          this.callbacks.onActionComplete(this.currentAction);
+          const cleanedContent = this._cleanContent(this.actionContent);
+          this.callbacks.onActionComplete({
+            type: this.currentAction.type,
+            filePath: this.currentAction.filePath,
+            content: cleanedContent
+          });
 
-          let skipLen = endMatch[0].length;
-          this.currentIndex += endMatch.index + skipLen;
           this.currentAction = null;
+          this.actionContent = "";
+          this.state = "IN_ARTIFACT";
+          advanced = true;
         } else {
-          const partialEnd = remaining.lastIndexOf('</');
-          if (partialEnd !== -1) {
-            this.currentAction.content += remaining.slice(0, partialEnd);
-            this.currentIndex += partialEnd;
-            break;
+          const possibleClose = this.buffer.lastIndexOf("<");
+          if (possibleClose !== -1 && "</boltaction>".startsWith(this.buffer.slice(possibleClose).toLowerCase())) {
+            this.actionContent += this.buffer.slice(0, possibleClose);
+            this.buffer = this.buffer.slice(possibleClose);
           } else {
-            this.currentAction.content += remaining;
-            this.currentIndex = this.buffer.length;
+            this.actionContent += this.buffer;
+            this.buffer = "";
           }
         }
-      }
-    }
-  }
-
-  _cleanActionContent(content) {
-    let cleaned = content.trim();
-    if (cleaned.startsWith('```')) {
-      const firstLineEnd = cleaned.indexOf(String.fromCharCode(10));
-      if (firstLineEnd !== -1) {
-        cleaned = cleaned.slice(firstLineEnd + 1);
-      }
-      const lastLineStart = cleaned.lastIndexOf('```');
-      if (lastLineStart !== -1) {
-        cleaned = cleaned.slice(0, lastLineStart);
-      }
-    }
-    return cleaned.trim();
-  }
-
-  _checkMarkdownFiles(text) {
-    const fileRegex = new RegExp('(?:###?\s*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?|File:\s*`?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)`?|```[a-zA-Z0-9_-]*\s+(?:filePath=)?["\x27]?([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)["\x27]?)[\s\S]*?```[a-zA-Z0-9_-]*[\r\n]+([\s\S]*?)```', 'g');
-    let match;
-    while ((match = fileRegex.exec(text)) !== null) {
-      const filePath = match[1] || match[2] || match[3];
-      const content = match[4];
-      if (filePath && content && !this.extractedFiles.has(filePath)) {
-        this.extractedFiles.add(filePath);
-        if (!this.currentArtifact) {
-          this.callbacks.onArtifactStart({ id: 'app', title: 'Extracted Project' });
+      } else if (this.state === "DONE") {
+        if (this.buffer) {
+          this.callbacks.onExplanationChunk(this.buffer);
+          this.buffer = "";
         }
-        this.callbacks.onActionStart({ type: 'file', filePath, content });
-        this.callbacks.onActionComplete({ type: 'file', filePath, content });
       }
     }
-    this.callbacks.onExplanationChunk(text);
-    this.currentIndex = this.buffer.length;
+  }
+
+  _cleanContent(content) {
+    let c = content.trim();
+    if (c.startsWith("```")) {
+      const nl = c.indexOf(String.fromCharCode(10));
+      if (nl !== -1) c = c.slice(nl + 1);
+      const endFence = c.lastIndexOf("```");
+      if (endFence !== -1) c = c.slice(0, endFence);
+    }
+    return c.trim();
   }
 
   end() {
-    if (this.currentIndex < this.buffer.length) {
-      if (!this.currentArtifact) {
-        this._checkMarkdownFiles(this.buffer.slice(this.currentIndex));
-      } else if (this.currentAction) {
-        this.currentAction.content += this.buffer.slice(this.currentIndex);
-        this.currentAction.content = this._cleanActionContent(this.currentAction.content);
-        this.callbacks.onActionComplete(this.currentAction);
-        this.currentAction = null;
+    if (this.state === "IN_ACTION" && this.currentAction) {
+      this.actionContent += this.buffer;
+      this.callbacks.onActionComplete({
+        type: this.currentAction.type,
+        filePath: this.currentAction.filePath,
+        content: this._cleanContent(this.actionContent)
+      });
+      this.currentAction = null;
+      this.actionContent = "";
+      if (this.currentArtifact) {
+        this.callbacks.onArtifactComplete(this.currentArtifact);
       }
-      this.currentIndex = this.buffer.length;
+    } else if (this.buffer) {
+      this.callbacks.onExplanationChunk(this.buffer);
     }
+    this.buffer = "";
   }
 }
