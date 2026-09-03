@@ -588,17 +588,17 @@ function openFile(filePath) {
  * Direct static & React in-browser preview compiler
  */
 function updateStaticPreviewFallback() {
-  if (webcontainerInstance && previewFrame.src && previewFrame.src.startsWith('http')) {
+  if (webcontainerInstance && previewFrame.src && previewFrame.src.startsWith("http")) {
     return; // dev server is running in container
   }
 
-  const htmlFile = virtualFileSystem.get('index.html') || virtualFileSystem.get('public/index.html');
-  const cssContent = virtualFileSystem.get('src/index.css') || virtualFileSystem.get('index.css') || '';
+  const htmlFile = virtualFileSystem.get("index.html") || virtualFileSystem.get("public/index.html");
+  const cssContent = virtualFileSystem.get("src/index.css") || virtualFileSystem.get("index.css") || "";
 
   const jsFiles = [];
   for (const [filePath, content] of virtualFileSystem.entries()) {
-    if (filePath.endsWith('.js') || filePath.endsWith('.jsx') || filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-      if (!filePath.includes('vite.config') && !filePath.includes('tailwind.config') && !filePath.includes('postcss.config')) {
+    if (filePath.endsWith(".js") || filePath.endsWith(".jsx") || filePath.endsWith(".ts") || filePath.endsWith(".tsx")) {
+      if (!filePath.includes("vite.config") && !filePath.includes("tailwind.config") && !filePath.includes("postcss.config")) {
         jsFiles.push({ path: filePath, content });
       }
     }
@@ -606,10 +606,10 @@ function updateStaticPreviewFallback() {
 
   if (jsFiles.length === 0 && !htmlFile) return;
 
-  if (previewPlaceholder) previewPlaceholder.classList.add('hidden');
+  if (previewPlaceholder) previewPlaceholder.classList.add("hidden");
 
   // If simple standalone HTML without React JSX
-  if (htmlFile && !htmlFile.includes('src/main') && !htmlFile.includes('src/App') && jsFiles.length === 0) {
+  if (htmlFile && !htmlFile.includes("src/main") && !htmlFile.includes("src/App") && jsFiles.length === 0) {
     previewFrame.srcdoc = htmlFile;
     return;
   }
@@ -620,83 +620,112 @@ function updateStaticPreviewFallback() {
         "react": "https://esm.sh/react@18.3.1",
         "react-dom": "https://esm.sh/react-dom@18.3.1",
         "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
-        "lucide-react": "https://esm.sh/lucide-react@0.344.0",
-        "canvas-confetti": "https://esm.sh/canvas-confetti@1.9.3",
+        "lucide-react": "https://esm.sh/lucide-react@0.344.0?bundle",
+        "canvas-confetti": "https://esm.sh/canvas-confetti@1.9.3?bundle",
         "clsx": "https://esm.sh/clsx@2.1.1",
         "tailwind-merge": "https://esm.sh/tailwind-merge@2.3.0"
       }
     };
 
+    const blobUrls = {};
+
     for (const file of jsFiles) {
       let code = file.content;
+
+      // Ensure React is imported in every component file
+      if (!code.includes("import React") && !code.includes("import * as React")) {
+        code = 'import React from "react";' + String.fromCharCode(10) + code;
+      }
+
       if (window.Babel) {
         try {
           const transpiled = window.Babel.transform(code, {
-            presets: [['react', { runtime: 'classic' }]]
+            presets: ["react"]
           }).code;
           code = transpiled;
         } catch (err) {
-          console.warn('Babel error in ' + file.path + ':', err);
+          console.warn("Babel transform error in " + file.path + ":", err);
         }
       }
 
-      const blob = new Blob([code], { type: 'application/javascript' });
+      const blob = new Blob([code], { type: "application/javascript" });
       const blobUrl = URL.createObjectURL(blob);
+      blobUrls[file.path] = blobUrl;
 
-      const norm = file.path.replace(/^\.?\/?/, '');
-      importMap.imports['/' + norm] = blobUrl;
-      importMap.imports['./' + norm] = blobUrl;
-      importMap.imports[norm] = blobUrl;
+      const norm = file.path.replace(/^\.?\/?/, "");
+      const base = norm.split("/").pop().replace(/\.[^/.]+$/, "");
+      const ext = norm.split(".").pop();
 
-      const baseName = norm.split('/').pop().replace(/\.[^/.]+$/, '');
-      importMap.imports['./' + baseName] = blobUrl;
-      importMap.imports['./' + baseName + '.jsx'] = blobUrl;
-      importMap.imports['./' + baseName + '.js'] = blobUrl;
-      importMap.imports['./components/' + baseName] = blobUrl;
-      importMap.imports['./components/' + baseName + '.jsx'] = blobUrl;
-      importMap.imports['./data/' + baseName] = blobUrl;
-      importMap.imports['./data/' + baseName + '.js'] = blobUrl;
+      // Register comprehensive aliases so any relative or absolute import matches
+      const aliases = [
+        norm,
+        "/" + norm,
+        "./" + norm,
+        base,
+        "./" + base,
+        "./" + base + "." + ext,
+        "../" + base,
+        "../" + base + "." + ext,
+        "./data/" + base,
+        "./data/" + base + "." + ext,
+        "../data/" + base,
+        "../data/" + base + "." + ext,
+        "./components/" + base,
+        "./components/" + base + "." + ext,
+        "../components/" + base,
+        "../components/" + base + "." + ext,
+        "./src/" + norm,
+        "/src/" + norm
+      ];
+
+      for (const a of aliases) {
+        importMap.imports[a] = blobUrl;
+      }
     }
 
     // 1. Pick or synthesize root App component
-    let entryBlobUrl = blobUrls['src/App.jsx'] || blobUrls['src/main.jsx'] || blobUrls['src/App.tsx'];
+    let entryBlobUrl = blobUrls["src/App.jsx"] || blobUrls["src/main.jsx"] || blobUrls["src/App.tsx"];
 
     if (!entryBlobUrl) {
-      // Find all component files
-      const componentFiles = jsFiles.filter(f => f.path.includes('components/') || (f.path.endsWith('.jsx') && !f.path.includes('vite.config')));
+      const componentFiles = jsFiles.filter(f => f.path.includes("components/") || (f.path.endsWith(".jsx") && !f.path.includes("vite.config")));
       const compImports = componentFiles.map((cf, i) => {
-        const norm = cf.path.replace(/^\.?\/?/, '');
+        const norm = cf.path.replace(/^\.?\/?/, "");
         return 'import Comp' + i + ' from "./' + norm + '";';
-      }).join(String.fromCharCode(10));
+      }).join("\n");
 
-      const compRenders = componentFiles.map((cf, i) => '<Comp' + i + ' />').join(String.fromCharCode(10) + '        ');
+      const compRenders = componentFiles.map((cf, i) => "<Comp" + i + " />").join("\n        ");
 
-      let syntheticCode = 'import React from "react";' + String.fromCharCode(10) +
-        compImports + String.fromCharCode(10) + String.fromCharCode(10) +
-        'export default function App() {' + String.fromCharCode(10) +
-        '  return (' + String.fromCharCode(10) +
-        '    <div className="min-h-screen bg-slate-900 text-white">' + String.fromCharCode(10) +
-        '      ' + (compRenders || '<div className="p-8 text-center text-xl font-bold">Rendering application...</div>') + String.fromCharCode(10) +
-        '    </div>' + String.fromCharCode(10) +
-        '  );' + String.fromCharCode(10) +
-        '}';
+      let syntheticCode = [
+        'import React from "react";',
+        compImports,
+        '',
+        'export default function App() {',
+        '  return (',
+        '    <div className="min-h-screen bg-slate-900 text-white font-sans">',
+        '      ' + (compRenders || '<div className="p-8 text-center text-xl font-bold">Building application components...</div>'),
+        '    </div>',
+        '  );',
+        '}'
+      ].join(String.fromCharCode(10));
 
       if (window.Babel) {
         try {
-          syntheticCode = window.Babel.transform(syntheticCode, { presets: [['react', { runtime: 'classic' }]] }).code;
-        } catch (e) {}
+          syntheticCode = window.Babel.transform(syntheticCode, { presets: ["react"] }).code;
+        } catch (e) {
+          console.warn("Synthetic App transform issue:", e);
+        }
       }
 
-      const synBlob = URL.createObjectURL(new Blob([syntheticCode], { type: 'application/javascript' }));
-      blobUrls['src/App.jsx'] = synBlob;
-      importMap.imports['./src/App.jsx'] = synBlob;
-      importMap.imports['src/App.jsx'] = synBlob;
-      importMap.imports['./App.jsx'] = synBlob;
-      importMap.imports['./App'] = synBlob;
+      const synBlob = URL.createObjectURL(new Blob([syntheticCode], { type: "application/javascript" }));
+      blobUrls["src/App.jsx"] = synBlob;
+      importMap.imports["./src/App.jsx"] = synBlob;
+      importMap.imports["src/App.jsx"] = synBlob;
+      importMap.imports["./App.jsx"] = synBlob;
+      importMap.imports["./App"] = synBlob;
       entryBlobUrl = synBlob;
     }
 
-    const cleanCss = cssContent.split('@tailwind').join('/* @tailwind */');
+    const cleanCss = cssContent.split("@tailwind").join("/* @tailwind */");
 
     const compiledHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -711,23 +740,42 @@ function updateStaticPreviewFallback() {
   <script type="importmap">
     ${JSON.stringify(importMap, null, 2)}
   </script>
+  <script>
+    window.addEventListener("error", function(e) {
+      console.error("Preview error:", e);
+      var r = document.getElementById("root") || document.body;
+      r.innerHTML = "<div style=\"padding:2rem;background:#18181b;color:#f87171;font-family:monospace;border-radius:10px;margin:1.5rem;border:1px solid #3f3f46;\">" +
+        "<h3 style=\"margin-bottom:0.5rem;color:#fca5a5;font-size:16px;\">⚠️ Preview Runtime Error</h3>" +
+        "<div style=\"font-size:13px;line-height:1.6;\">" + (e.message || "Error executing script") + "</div>" +
+        "<pre style=\"margin-top:1rem;color:#a1a1aa;font-size:11px;overflow:auto;\">" + (e.filename ? e.filename + ":" + e.lineno : "") + "</pre>" +
+      "</div>";
+    });
+    window.addEventListener("unhandledrejection", function(e) {
+      console.error("Unhandled rejection in preview:", e);
+      var r = document.getElementById("root") || document.body;
+      r.innerHTML = "<div style=\"padding:2rem;background:#18181b;color:#f87171;font-family:monospace;border-radius:10px;margin:1.5rem;border:1px solid #3f3f46;\">" +
+        "<h3 style=\"margin-bottom:0.5rem;color:#fca5a5;font-size:16px;\">⚠️ Module Import Error</h3>" +
+        "<div style=\"font-size:13px;line-height:1.6;\">" + (e.reason && e.reason.message ? e.reason.message : String(e.reason)) + "</div>" +
+      "</div>";
+    });
+  </script>
 </head>
 <body class="bg-slate-900 text-white min-h-screen">
   <div id="root"></div>
   <script type="module">
-    import React from 'react';
-    import ReactDOM from 'react-dom/client';
+    import React from "react";
+    import ReactDOM from "react-dom/client";
 
     try {
-      const mod = await import('${entryBlobUrl}');
+      const mod = await import("${entryBlobUrl}");
       const Component = mod.default || mod.App || mod.Hero || mod.Navbar || mod[Object.keys(mod)[0]];
-      if (Component && !document.getElementById('root').hasChildNodes()) {
-        const root = ReactDOM.createRoot(document.getElementById('root'));
+      if (Component && !document.getElementById("root").hasChildNodes()) {
+        const root = ReactDOM.createRoot(document.getElementById("root"));
         root.render(React.createElement(Component));
       }
     } catch (err) {
-      console.error('Preview error:', err);
-      document.getElementById('root').innerHTML = '<div style="padding:1.5rem;color:#f87171;font-family:monospace;font-size:13px;"><h3>Live Preview Error</h3><pre>' + err.message + '</pre></div>';
+      console.error("Preview bootstrap error:", err);
+      document.getElementById("root").innerHTML = "<div style=\"padding:1.5rem;color:#f87171;background:#18181b;font-family:monospace;font-size:13px;border-radius:8px;margin:1rem;border:1px solid #3f3f46;\"><h3 style=\"color:#fca5a5;margin-bottom:0.5rem;\">Live Preview Error</h3><pre>" + err.message + "</pre></div>";
     }
   </script>
 </body>
@@ -735,7 +783,7 @@ function updateStaticPreviewFallback() {
 
     previewFrame.srcdoc = compiledHtml;
   } catch (err) {
-    console.error('Preview compilation failed:', err);
+    console.error("Preview compilation failed:", err);
   }
 }
 

@@ -13,6 +13,7 @@ CRITICAL INSTRUCTION:
 Do NOT output code in plain markdown code blocks.
 Do NOT write code directly in conversational text.
 ALL code, files, and commands MUST be enclosed inside a <boltArtifact> containing <boltAction> tags.
+CRITICAL GENERATION ORDER: ALWAYS generate package.json, index.html, src/App.jsx, and src/main.jsx BEFORE writing individual subcomponents so the live preview immediately mounts and renders.
 
 Artifact Structure:
 <boltArtifact id="project-app" title="Project Title">
